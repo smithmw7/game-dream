@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#77aeb7" />
+    <title>Game Dream</title>
+  </head>
+  <body>
+    <main id="game-shell">
+      <canvas id="game" aria-label="Game Dream 3D canvas"></canvas>
+      <section id="intro" class="panel">
+        <p class="eyebrow">GAME DREAM</p>
+        <h1>Roll into the light.</h1>
+        <p class="instructions">WASD / arrows to roll · Space to jump<br />Drag to look · F for fullscreen</p>
+        <button id="start-button" type="button">Enter dream</button>
+      </section>
+      <div id="reticle" aria-hidden="true"></div>
+      <div id="fps-display" aria-label="Frames per second"><span id="fps-value">--</span> FPS</div>
+      <div id="touch-joystick" class="mobile-only" aria-hidden="true">
+        <div id="touch-stick"></div>
+      </div>
+      <div id="touch-hint" class="mobile-only" aria-hidden="true">RIGHT DRAG LOOK · SWIPE UP JUMP</div>
+      <button id="reset-button" type="button" aria-label="Reset ball">Reset</button>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
