@@ -7,14 +7,15 @@ A surreal, high-speed rolling-marble game built with Three.js and Rapier.
 ## Features
 
 - Rigid glossy marble with a texture-free volumetric PBR shader
-- Splash screen with Free Mode and the timed `Sunset Velocity` Race Mode
+- Splash screen with Free Mode and the timed `Monolith Velocity` Race Mode
 - Literal 6.5 km downhill half-pipe: 50x the original course length, descending from the cloudline
 - Thirteen authored pacing sections, twelve checkpoints, strong S-turns, changing banks, rollers, two complete vertical loops, and a finish line
 - 452 collectible coins, 71 coin-clearing hazards, and six single-hit shield powerups
 - Race HUD, countdown, speed meter, finish summary, and persistent best-time/coin records
 - Procedural Web Audio feedback, speed-reactive wind, and supported-device haptics
 - Deterministic arcade handling with section-specific speed targets, crisp lane steering, strong jump gravity, stable zero-bounce landings, and rapid recovery
-- High-contrast procedural PBR track surfacing with navy road grit, warm lane markings, cyan edge ribbons, magenta hazards, and texture-free cloud shelves
+- High-contrast procedural PBR track surfacing with navy road grit, cyan edge ribbons, magenta hazards, and texture-free cloud shelves
+- Noise-built canyon terrain, colossal concrete and glossy-metal monuments, emissive arch inlays, a procedural star field, magenta nebula clouds, and a synthetic cyan moon
 - Physics-driven Free Mode plus a track-constrained Race Mode motor that stays pristine through banks and loops
 - Spring-arm third-person camera with obstruction handling
 - Procedural atmospheric sky and synchronized sunlight

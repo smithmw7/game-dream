@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { Water } from 'three/addons/objects/Water.js';
+import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -863,6 +864,193 @@ const raceRails = new THREE.Mesh(createTrackEdgeGeometry(), railMaterial);
 raceRails.frustumCulled = false;
 raceGroup.add(raceRails);
 
+// The race landscape is generated in the same moving track frame as the road.
+// This lets the canyon follow every authored turn without shipping a terrain asset.
+const terrainNoise = new ImprovedNoise();
+const monumentalConcrete = new THREE.MeshStandardMaterial({
+  color: '#31394d', roughness: 0.88, metalness: 0.02, envMapIntensity: 0.32,
+});
+const blackConcrete = new THREE.MeshStandardMaterial({
+  color: '#111522', roughness: 0.94, metalness: 0.01, envMapIntensity: 0.2,
+});
+const glossyMonumentMetal = new THREE.MeshPhysicalMaterial({
+  color: '#273f53', emissive: '#061925', emissiveIntensity: 0.28,
+  roughness: 0.12, metalness: 0.92, clearcoat: 1, clearcoatRoughness: 0.08,
+  envMapIntensity: 1.7,
+});
+const monumentNeon = new THREE.MeshPhysicalMaterial({
+  color: '#ff3bd4', emissive: '#ff078d', emissiveIntensity: 4.2,
+  roughness: 0.16, metalness: 0.35, clearcoat: 1, clearcoatRoughness: 0.08,
+});
+
+function terrainHeight(distance, lateral, side) {
+  const ridges = terrainNoise.noise(distance * 0.006, lateral * 0.045, side * 7.3);
+  const detail = terrainNoise.noise(distance * 0.021 + side * 11.0, lateral * 0.12, 3.7);
+  const wallRise = THREE.MathUtils.smoothstep(Math.abs(lateral), 11, 64);
+  return 2.5 + wallRise * (28 + ridges * 17 + detail * 7);
+}
+
+function createProceduralCanyonGeometry() {
+  const lateralBands = [10, 15, 23, 34, 48, 66];
+  const positions = [];
+  const colors = [];
+  const indices = [];
+  const rows = raceTrackSamples.length;
+
+  for (const side of [-1, 1]) {
+    const vertexOffset = positions.length / 3;
+    for (const frame of raceTrackSamples) {
+      for (let band = 0; band < lateralBands.length; band++) {
+        const lateral = lateralBands[band] * side;
+        const height = terrainHeight(frame.distance, lateral, side);
+        const point = frame.center.clone()
+          .addScaledVector(frame.right, lateral)
+          .addScaledVector(frame.up, height - 6 + band * 0.7);
+        positions.push(point.x, point.y, point.z);
+        const glow = THREE.MathUtils.clamp((height - 10) / 48, 0, 1);
+        colors.push(0.055 + glow * 0.045, 0.075 + glow * 0.055, 0.14 + glow * 0.09);
+      }
+    }
+
+    for (let row = 0; row < rows - 1; row++) {
+      const aFrame = raceTrackSamples[row];
+      const bFrame = raceTrackSamples[row + 1];
+      // Leave clean air around the two vertical loops instead of twisting terrain through them.
+      if (aFrame.loop || bFrame.loop) continue;
+      for (let band = 0; band < lateralBands.length - 1; band++) {
+        const a = vertexOffset + row * lateralBands.length + band;
+        const b = a + 1;
+        const c = a + lateralBands.length;
+        const d = c + 1;
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+const canyonMaterial = new THREE.MeshStandardMaterial({
+  color: '#17233c', vertexColors: true, roughness: 0.96, metalness: 0.02,
+  envMapIntensity: 0.18, side: THREE.DoubleSide, flatShading: true,
+});
+const raceCanyon = new THREE.Mesh(createProceduralCanyonGeometry(), canyonMaterial);
+raceCanyon.receiveShadow = true;
+raceCanyon.frustumCulled = false;
+raceGroup.add(raceCanyon);
+
+function addMonumentArch(distance, radius, pillarHeight, depth, material = monumentalConcrete) {
+  const group = new THREE.Group();
+  const tube = Math.max(1.7, radius * 0.16);
+  const arch = new THREE.Mesh(new THREE.TorusGeometry(radius, tube, 12, 64, Math.PI), material);
+  arch.position.y = pillarHeight;
+  arch.scale.z = depth / (tube * 2);
+  arch.castShadow = true;
+  arch.receiveShadow = true;
+  group.add(arch);
+
+  for (const side of [-1, 1]) {
+    const pillar = new THREE.Mesh(
+      new THREE.BoxGeometry(tube * 2, pillarHeight, depth),
+      side > 0 ? material : blackConcrete,
+    );
+    pillar.position.set(side * radius, pillarHeight / 2, 0);
+    pillar.castShadow = true;
+    pillar.receiveShadow = true;
+    group.add(pillar);
+  }
+
+  const innerHalo = new THREE.Mesh(
+    new THREE.TorusGeometry(radius - tube * 0.78, Math.max(0.16, tube * 0.085), 8, 64, Math.PI),
+    monumentNeon,
+  );
+  innerHalo.position.set(0, pillarHeight, -depth * 0.52);
+  group.add(innerHalo);
+  orientRaceObject(group, distance);
+  raceGroup.add(group);
+  return group;
+}
+
+function addMonolithWall(distance, side, width, height, depth, yaw = 0) {
+  const frame = getRaceFrame(distance);
+  const wall = new THREE.Mesh(
+    new THREE.BoxGeometry(width, height, depth),
+    side > 0 ? glossyMonumentMetal : monumentalConcrete,
+  );
+  wall.position.copy(frame.center)
+    .addScaledVector(frame.right, side * (RACE_HALF_WIDTH + 10 + width * 0.2))
+    .addScaledVector(frame.up, height * 0.42);
+  wall.quaternion.setFromRotationMatrix(makeRaceBasis(frame));
+  wall.rotateY(yaw);
+  wall.castShadow = true;
+  wall.receiveShadow = true;
+  raceGroup.add(wall);
+}
+
+[
+  [210, 15, 17, 8],
+  [1180, 22, 24, 11],
+  [2010, 28, 30, 14],
+  [3320, 19, 22, 9],
+  [4380, 30, 34, 15],
+  [5740, 24, 28, 12],
+  [6280, 34, 38, 17],
+].forEach(([distance, radius, height, depth], index) => {
+  addMonumentArch(distance, radius, height, depth, index % 3 === 1 ? glossyMonumentMetal : monumentalConcrete);
+});
+
+for (let distance = 520, index = 0; distance < RACE_LENGTH - 260; distance += 430, index++) {
+  if (TRACK_LOOPS.some((loop) => Math.abs(distance - (loop.start + loop.length / 2)) < loop.length)) continue;
+  addMonolithWall(distance, index % 2 ? 1 : -1, 9 + (index % 3) * 4, 24 + (index % 4) * 9, 12 + (index % 2) * 8, (index % 3 - 1) * 0.18);
+}
+
+const raceSkyUniforms = {
+  time: { value: 0 },
+};
+const raceSkyMaterial = new THREE.ShaderMaterial({
+  uniforms: raceSkyUniforms,
+  side: THREE.BackSide,
+  depthWrite: false,
+  vertexShader: `varying vec3 vDirection; void main() { vDirection = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    varying vec3 vDirection;
+    uniform float time;
+    float hash(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+    float noise(vec3 p) {
+      vec3 i = floor(p); vec3 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x), mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y), mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x), mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+    }
+    void main() {
+      vec3 d = normalize(vDirection);
+      float horizon = pow(clamp(1.0 - abs(d.y + 0.08), 0.0, 1.0), 4.0);
+      float cloudNoise = noise(d * 5.2 + vec3(0.0, time * 0.002, 0.0)) * 0.62 + noise(d * 13.0) * 0.38;
+      float cloud = smoothstep(0.68, 0.88, cloudNoise) * smoothstep(-0.38, 0.08, d.y);
+      float starCell = hash(floor(d * 520.0));
+      float stars = step(0.992, starCell) * pow(starCell, 18.0) * smoothstep(-0.12, 0.18, d.y);
+      vec3 color = mix(vec3(0.005, 0.012, 0.055), vec3(0.018, 0.075, 0.18), max(d.y, 0.0));
+      color += vec3(0.08, 0.01, 0.16) * horizon;
+      color += cloud * vec3(0.42, 0.018, 0.27) * (0.18 + horizon * 0.82);
+      color += stars * mix(vec3(0.35, 0.8, 1.0), vec3(1.0, 0.25, 0.72), hash(floor(d * 311.0))) * 2.8;
+      gl_FragColor = vec4(color, 1.0);
+    }
+  `,
+});
+const raceSkyDome = new THREE.Mesh(new THREE.SphereGeometry(210, 32, 20), raceSkyMaterial);
+raceSkyDome.visible = false;
+raceSkyDome.renderOrder = -10;
+scene.add(raceSkyDome);
+
+const moonMaterial = new THREE.MeshBasicMaterial({ color: '#58efff', transparent: true, opacity: 0.92 });
+const raceMoon = new THREE.Mesh(new THREE.SphereGeometry(19, 32, 20), moonMaterial);
+raceMoon.visible = false;
+scene.add(raceMoon);
+
 const raceGateMaterial = new THREE.MeshPhysicalMaterial({ color: '#ffb31a', emissive: '#9b4500', emissiveIntensity: 0.45, roughness: 0.24, clearcoat: 0.78, clearcoatRoughness: 0.14, envMapIntensity: 1.25 });
 const finishDarkMaterial = new THREE.MeshStandardMaterial({ color: '#071721', roughness: 0.42 });
 const finishLightMaterial = new THREE.MeshStandardMaterial({ color: '#fff1d4', roughness: 0.42 });
@@ -1058,8 +1246,8 @@ for (const section of COURSE_SECTIONS) {
 
 // A texture-free cloud shelf below the first half makes the 720-unit launch altitude legible.
 const cloudMaterial = new THREE.MeshPhysicalMaterial({
-  color: '#fffaf0', emissive: '#fff1dc', emissiveIntensity: 0.16,
-  roughness: 0.96, metalness: 0, transparent: true, opacity: 0.48,
+  color: '#351033', emissive: '#c20a73', emissiveIntensity: 0.42,
+  roughness: 0.96, metalness: 0, transparent: true, opacity: 0.2,
   depthWrite: false, envMapIntensity: 0.08,
 });
 const cloudPuffs = [];
@@ -1068,12 +1256,12 @@ for (let distance = 90, index = 0; distance < 3350; distance += 48, index++) {
     const spread = 16 + (index % 5) * 5;
     const frame = getRaceFrame(distance);
     const position = frame.center.clone()
-      .addScaledVector(frame.right, side * spread)
-      .addScaledVector(frame.up, 5 + (index % 4) * 5)
+      .addScaledVector(frame.right, side * (spread + 5))
+      .addScaledVector(frame.up, 10 + (index % 4) * 6)
       .addScaledVector(frame.tangent, side > 0 ? 11 : -9);
     cloudPuffs.push({
       position,
-      scale: new THREE.Vector3(7 + index % 4 * 2.1, 5 + index % 3 * 1.35, 8 + index % 5 * 1.6),
+      scale: new THREE.Vector3(5 + index % 4 * 1.6, 3.5 + index % 3, 6 + index % 5 * 1.15),
     });
   }
 }
@@ -1255,12 +1443,16 @@ function showToast(message, duration = 1.25) {
 }
 
 function applyModeLook(racing) {
-  renderer.toneMappingExposure = racing ? 0.59 : 0.72;
-  scene.environmentIntensity = racing ? 0.46 : 0.58;
-  scene.fog.color.set(racing ? '#6b9abb' : '#9fc4ca');
-  scene.fog.near = racing ? 86 : 70;
-  scene.fog.far = racing ? 250 : 190;
-  sun.intensity = racing ? 3.15 : 3.8;
+  renderer.toneMappingExposure = racing ? 0.54 : 0.72;
+  scene.environmentIntensity = racing ? 0.22 : 0.58;
+  scene.fog.color.set(racing ? '#091027' : '#9fc4ca');
+  scene.fog.near = racing ? 105 : 70;
+  scene.fog.far = racing ? 330 : 190;
+  sun.color.set(racing ? '#8adfff' : '#ffd2a0');
+  sun.intensity = racing ? 0.62 : 3.8;
+  raceSkyDome.visible = racing;
+  raceMoon.visible = racing;
+  sky.visible = !racing;
 }
 
 let audioContext;
@@ -1415,7 +1607,7 @@ function startRace() {
   ensureAudio();
   resetRaceObjects();
   Object.assign(race, {
-    elapsed: 0, countdown: 3.25, coins: 0, shield: false,
+    elapsed: 0, countdown: debugRaceQuery ? 0.08 : 3.25, coins: 0, shield: false,
     checkpointIndex: 0, lastCheckpointDistance: 4,
     hitCooldown: 0, toastTimer: 0, shieldPickups: 0, shieldPops: 0, coinCrashes: 0,
   });
@@ -1882,6 +2074,13 @@ function updateVisuals(dt) {
 
   const raceVisible = raceGroup.visible;
   if (raceVisible) {
+    const frame = getRaceFrame(raceMotor.distance);
+    raceSkyUniforms.time.value = state.elapsed;
+    raceSkyDome.position.copy(ball.position);
+    raceMoon.position.copy(ball.position)
+      .addScaledVector(frame.tangent, 185)
+      .addScaledVector(frame.up, 52)
+      .addScaledVector(frame.right, -44);
     let coinMatricesChanged = false;
     for (let i = 0; i < raceCoins.length; i++) {
       const coin = raceCoins[i];
@@ -2070,7 +2269,7 @@ window.render_game_to_text = () => {
       target: { x: +smoothTarget.x.toFixed(2), y: +smoothTarget.y.toFixed(2), z: +smoothTarget.z.toFixed(2) },
     },
     race: {
-      course: 'Sunset Velocity',
+      course: 'Monolith Velocity',
       section: currentSection.name,
       sectionIndex: COURSE_SECTIONS.indexOf(currentSection) + 1,
       sectionCount: COURSE_SECTIONS.length,
@@ -2103,7 +2302,7 @@ window.render_game_to_text = () => {
       shieldPops: race.shieldPops,
       coinCrashes: race.coinCrashes,
     },
-    performance: { fps: state.fps, mobileMode: isMobileDevice, pixelRatio: qualityRatio, antialiasSamples: isMobileDevice ? 0 : 4, shadowMap: isMobileDevice ? 1024 : 2048, reflectionMap: isMobileDevice ? 384 : 768, postProcessing: !isMobileDevice, gtaoEnabled: gtao.enabled, gtaoSamples: gtao.enabled ? gtaoSamples : 0 },
+    performance: { fps: state.fps, mobileMode: isMobileDevice, pixelRatio: qualityRatio, antialiasSamples: isMobileDevice ? 0 : 4, shadowMap: isMobileDevice ? 1024 : 2048, reflectionMap: isMobileDevice ? 384 : 768, postProcessing: !isMobileDevice && !state.mode.startsWith('race'), gtaoEnabled: gtao.enabled && !state.mode.startsWith('race'), gtaoSamples: gtao.enabled && !state.mode.startsWith('race') ? gtaoSamples : 0 },
     controls: state.mode.startsWith('race')
       ? 'automatic high-speed forward roll, drag horizontally to steer, tap or Space to jump including in air, fixed chase camera, R reset to last checkpoint'
       : (isMobileDevice ? 'automatic forward roll, one-finger horizontal slide steering, tap or upward swipe jump with repeatable air jumps, automatic camera, Reset button' : 'WASD/arrows roll, Space jump, drag look, R reset, F fullscreen'),
@@ -2115,9 +2314,11 @@ window.render_game_to_text = () => {
       const baseBlock = floatingWoodBlocks.find((block) => block.tower === name);
       return { name, species, x, z, blocks: count, currentBaseY: +baseBlock.body.translation().y.toFixed(2) };
     }),
-    environment: { playerMaterial: 'rigid texture-free procedural PBR marble', sky: 'procedural Preetham', sunElevation: skySettings.elevation, water: 'planar reflective', waves: 'three small geometric wave bands, max amplitude 0.046' },
+    environment: state.mode.startsWith('race')
+      ? { playerMaterial: 'rigid texture-free procedural PBR marble', sky: 'procedural stars and magenta nebula', terrain: 'ImprovedNoise track-following canyon', monuments: '7 colossal arches plus 14 concrete and glossy-metal walls', moon: 'synthetic cyan' }
+      : { playerMaterial: 'rigid texture-free procedural PBR marble', sky: 'procedural Preetham', sunElevation: skySettings.elevation, water: 'planar reflective', waves: 'three small geometric wave bands, max amplitude 0.046' },
     landmarks: state.mode.startsWith('race')
-      ? [`start elevation ${raceTrackSamples[0].center.y.toFixed(0)}`, `${RACE_CHECKPOINT_DISTANCES.length} checkpoints divide ${COURSE_SECTIONS.length} paced sections`, `finish elevation ${raceTrackSamples.at(-1).center.y.toFixed(0)}`, `6500-unit banked half-pipe with strong S-turns and ${TRACK_LOOPS.length} complete vertical loops`]
+      ? [`start elevation ${raceTrackSamples[0].center.y.toFixed(0)}`, `${RACE_CHECKPOINT_DISTANCES.length} checkpoints divide ${COURSE_SECTIONS.length} paced sections`, `finish elevation ${raceTrackSamples.at(-1).center.y.toFixed(0)}`, `6500-unit banked half-pipe with strong S-turns and ${TRACK_LOOPS.length} complete vertical loops`, 'procedural canyon and seven monumental arches']
       : ['gold arch at (0, -5)', 'rose/coral stairs near (-7, -5)', 'coral arch at (7, -12)'],
   });
 };
