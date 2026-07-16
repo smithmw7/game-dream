@@ -30,6 +30,7 @@ const hudTime = document.querySelector('#hud-time');
 const hudCoins = document.querySelector('#hud-coins');
 const hudCheckpoint = document.querySelector('#hud-checkpoint');
 const hudShield = document.querySelector('#hud-shield');
+const hudSection = document.querySelector('#hud-section');
 const speedFill = document.querySelector('#speed-fill');
 const raceToast = document.querySelector('#race-toast');
 const briefBestTime = document.querySelector('#brief-best-time');
@@ -56,9 +57,9 @@ if (isMobileDevice) {
 }
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog('#9fc4ca', 38, 92);
+scene.fog = new THREE.Fog('#9fc4ca', 70, 190);
 
-const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.08, 100);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.08, 260);
 camera.position.set(6, 5, 11);
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
@@ -107,7 +108,7 @@ function styleVisibleSky(sky) {
 }
 
 const sky = new Sky();
-sky.scale.setScalar(1000);
+sky.scale.setScalar(20000);
 configureSky(sky, true);
 styleVisibleSky(sky);
 scene.add(sky);
@@ -137,7 +138,7 @@ scene.add(sun);
 scene.add(sun.target);
 scene.add(new THREE.HemisphereLight('#b9e3ef', '#d89770', 0.24));
 
-const world = new RAPIER.World({ x: 0, y: -19.5, z: 0 });
+const world = new RAPIER.World({ x: 0, y: -34, z: 0 });
 world.timestep = 1 / 60;
 
 const materials = {
@@ -593,46 +594,88 @@ function updateFloatingWoodPhysics(time) {
 
 const RACE_ORIGIN_X = 80;
 const RACE_START_Z = 26;
-const RACE_FINISH_Z = -104;
-const RACE_HALF_WIDTH = 5.4;
-const RACE_CHECKPOINT_Z = [-7, -40, -73];
+const RACE_LENGTH = 6500;
+const RACE_FINISH_Z = RACE_START_Z - RACE_LENGTH;
+const RACE_HALF_WIDTH = 6.2;
+const COURSE_SECTIONS = [
+  { name: 'Sky Launch', start: 0, end: 350, speed: 34, coinSpacing: 15, hazardSpacing: 170, pattern: 'warmup', intensity: 1 },
+  { name: 'Ribbon Run', start: 350, end: 850, speed: 39, coinSpacing: 14, hazardSpacing: 92, pattern: 'ribbon', intensity: 2 },
+  { name: 'High Banks', start: 850, end: 1350, speed: 43, coinSpacing: 14, hazardSpacing: 82, pattern: 'banks', intensity: 3 },
+  { name: 'Needle Gates', start: 1350, end: 1850, speed: 47, coinSpacing: 13, hazardSpacing: 68, pattern: 'gates', intensity: 4 },
+  { name: 'Golden Breather', start: 1850, end: 2150, speed: 38, coinSpacing: 16, hazardSpacing: 0, pattern: 'breather', intensity: 1 },
+  { name: 'Roller Rhythm', start: 2150, end: 2800, speed: 45, coinSpacing: 14, hazardSpacing: 78, pattern: 'rollers', intensity: 3 },
+  { name: 'Split Decision', start: 2800, end: 3350, speed: 48, coinSpacing: 16, hazardSpacing: 72, pattern: 'split', intensity: 4 },
+  { name: 'Cloudline Sprint', start: 3350, end: 3900, speed: 52, coinSpacing: 14, hazardSpacing: 88, pattern: 'sprint', intensity: 3 },
+  { name: 'Shield Gauntlet', start: 3900, end: 4450, speed: 46, coinSpacing: 13, hazardSpacing: 62, pattern: 'shield', intensity: 5 },
+  { name: 'Crosswind Chicane', start: 4450, end: 5050, speed: 50, coinSpacing: 13, hazardSpacing: 66, pattern: 'chicane', intensity: 5 },
+  { name: 'The Long Dive', start: 5050, end: 5650, speed: 56, coinSpacing: 15, hazardSpacing: 98, pattern: 'dive', intensity: 3 },
+  { name: 'Final Circuit', start: 5650, end: 6200, speed: 52, coinSpacing: 12, hazardSpacing: 58, pattern: 'circuit', intensity: 5 },
+  { name: 'Home Stretch', start: 6200, end: 6500, speed: 60, coinSpacing: 11, hazardSpacing: 74, pattern: 'finale', intensity: 4 },
+];
+const RACE_CHECKPOINT_Z = COURSE_SECTIONS.slice(0, -1).map((section) => RACE_START_Z - section.end);
 const raceGroup = new THREE.Group();
 raceGroup.visible = false;
 scene.add(raceGroup);
 
+function raceDistanceAt(z) {
+  return THREE.MathUtils.clamp(RACE_START_Z - z, 0, RACE_LENGTH);
+}
+
 function raceProgressAt(z) {
-  return THREE.MathUtils.clamp((RACE_START_Z - z) / (RACE_START_Z - RACE_FINISH_Z), 0, 1);
+  return raceDistanceAt(z) / RACE_LENGTH;
+}
+
+function raceSectionAt(z) {
+  const distance = raceDistanceAt(z);
+  return COURSE_SECTIONS.find((section) => distance < section.end) || COURSE_SECTIONS[COURSE_SECTIONS.length - 1];
+}
+
+function raceCenterX(z) {
+  const progress = raceProgressAt(z);
+  return RACE_ORIGIN_X + Math.sin(progress * Math.PI * 4) * 10 + Math.sin(progress * Math.PI * 11 + 0.6) * 4;
+}
+
+function raceForwardAt(z, target = new THREE.Vector3()) {
+  const sample = 2;
+  return target.set(raceCenterX(z - sample) - raceCenterX(z), 0, -sample).normalize();
 }
 
 function raceCenterHeight(z) {
   const progress = raceProgressAt(z);
-  return 12.5 - progress * 25.5 + Math.sin(progress * Math.PI * 5.0) * 0.34;
+  const macroRollers = Math.sin(progress * Math.PI * 26) * 2.25;
+  const fineRollers = Math.sin(progress * Math.PI * 58 + 0.8) * 0.72;
+  return 720 - progress * 1120 + macroRollers + fineRollers;
 }
 
 function raceSurfaceHeight(worldX, z) {
   const progress = raceProgressAt(z);
-  const localX = worldX - RACE_ORIGIN_X;
+  const section = raceSectionAt(z);
+  const localX = worldX - raceCenterX(z);
   const normalizedX = localX / RACE_HALF_WIDTH;
-  const trough = normalizedX * normalizedX * 4.15;
-  const bank = Math.sin(progress * Math.PI * 5.5) * localX * 0.13;
-  const ripple = Math.sin(progress * Math.PI * 14.0) * 0.12 * (1 - Math.min(1, Math.abs(normalizedX)));
+  const troughDepth = 4.3 + section.intensity * 0.2 + Math.sin(progress * Math.PI * 18) * 0.42;
+  const trough = normalizedX * normalizedX * troughDepth;
+  const bank = Math.sin(progress * Math.PI * 17.5 + section.intensity) * localX * (0.1 + section.intensity * 0.025);
+  const ripple = Math.sin(progress * Math.PI * 92) * 0.22 * (1 - Math.min(1, Math.abs(normalizedX)));
   return raceCenterHeight(z) + trough + bank + ripple;
 }
 
 function createRaceTrackGeometry() {
-  const xSegments = isMobileDevice ? 18 : 28;
-  const zSegments = isMobileDevice ? 130 : 190;
+  // The surface functions are deliberately low-frequency; 8-12 unit longitudinal
+  // spans stay visually smooth while keeping the 6.5 km collider affordable.
+  const xSegments = isMobileDevice ? 16 : 24;
+  const zSegments = isMobileDevice ? 560 : 800;
   const positions = [];
   const uvs = [];
   const indices = [];
   for (let zi = 0; zi <= zSegments; zi++) {
     const zT = zi / zSegments;
-    const z = THREE.MathUtils.lerp(RACE_START_Z + 5, RACE_FINISH_Z - 7, zT);
+    const z = THREE.MathUtils.lerp(RACE_START_Z + 8, RACE_FINISH_Z - 24, zT);
+    const centerX = raceCenterX(z);
     for (let xi = 0; xi <= xSegments; xi++) {
       const xT = xi / xSegments;
-      const worldX = RACE_ORIGIN_X + THREE.MathUtils.lerp(-RACE_HALF_WIDTH, RACE_HALF_WIDTH, xT);
+      const worldX = centerX + THREE.MathUtils.lerp(-RACE_HALF_WIDTH, RACE_HALF_WIDTH, xT);
       positions.push(worldX, raceSurfaceHeight(worldX, z), z);
-      uvs.push(xT, zT * 10);
+      uvs.push(xT, raceDistanceAt(z) / 18);
     }
   }
   const row = xSegments + 1;
@@ -672,7 +715,14 @@ raceTrackMaterial.onBeforeCompile = (shader) => {
     .replace(
     '#include <color_fragment>',
     `#include <color_fragment>
-      float raceStripe = smoothstep(0.06, 0.02, abs(vRaceUv.x - 0.5));
+      float courseProgress = clamp(vRaceUv.y / ${(RACE_LENGTH / 18).toFixed(5)}, 0.0, 1.0);
+      vec3 highColor = vec3(0.84, 0.42, 0.38);
+      vec3 middleColor = vec3(0.62, 0.35, 0.58);
+      vec3 lowColor = vec3(0.88, 0.56, 0.25);
+      vec3 courseColor = mix(highColor, middleColor, smoothstep(0.18, 0.54, courseProgress));
+      courseColor = mix(courseColor, lowColor, smoothstep(0.68, 0.96, courseProgress));
+      diffuseColor.rgb = mix(diffuseColor.rgb, courseColor, 0.46);
+      float raceStripe = 1.0 - smoothstep(0.02, 0.06, abs(vRaceUv.x - 0.5));
       float raceBands = smoothstep(0.48, 0.5, sin(vRaceUv.y * 3.14159) * 0.5 + 0.5) * 0.09;
       diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 0.72, 0.38), raceStripe * 0.7);
       diffuseColor.rgb += raceBands;
@@ -699,9 +749,10 @@ const finishLightMaterial = new THREE.MeshStandardMaterial({ color: '#fff1d4', r
 
 function addRaceGate(z, finish = false) {
   const group = new THREE.Group();
+  const centerX = raceCenterX(z);
   const postHeight = 3.0;
   for (const side of [-1, 1]) {
-    const x = RACE_ORIGIN_X + side * (RACE_HALF_WIDTH - 0.2);
+    const x = centerX + side * (RACE_HALF_WIDTH - 0.2);
     const post = new THREE.Mesh(new RoundedBoxGeometry(0.26, postHeight, 0.34, 3, 0.06), finish ? finishDarkMaterial : raceGateMaterial);
     post.position.set(x, raceSurfaceHeight(x, z) + postHeight / 2, z);
     post.castShadow = true;
@@ -709,13 +760,13 @@ function addRaceGate(z, finish = false) {
   }
   const beamY = raceCenterHeight(z) + 6.35;
   const beam = new THREE.Mesh(new RoundedBoxGeometry(RACE_HALF_WIDTH * 2, 0.34, 0.42, 3, 0.07), finish ? finishLightMaterial : raceGateMaterial);
-  beam.position.set(RACE_ORIGIN_X, beamY, z);
+  beam.position.set(centerX, beamY, z);
   beam.castShadow = true;
   group.add(beam);
   if (finish) {
     for (let i = 0; i < 12; i++) {
       const tile = new THREE.Mesh(new THREE.BoxGeometry(0.74, 0.17, 0.44), i % 2 ? finishDarkMaterial : finishLightMaterial);
-      tile.position.set(RACE_ORIGIN_X - 4.05 + i * 0.74, beamY, z - 0.02);
+      tile.position.set(centerX - 4.05 + i * 0.74, beamY, z - 0.02);
       group.add(tile);
     }
   }
@@ -731,63 +782,181 @@ const raceCoins = [];
 const coinGeometry = new THREE.TorusGeometry(0.32, 0.105, 10, 24);
 const coinMaterial = new THREE.MeshPhysicalMaterial({ color: '#ffd659', emissive: '#b95d12', emissiveIntensity: 0.42, roughness: 0.22, metalness: 0.46, clearcoat: 0.8, clearcoatRoughness: 0.12 });
 
-function addRaceCoin(localX, z, lift = 0.9) {
-  const x = RACE_ORIGIN_X + localX;
-  const mesh = new THREE.Mesh(coinGeometry, coinMaterial);
-  mesh.position.set(x, raceSurfaceHeight(x, z) + lift, z);
-  mesh.castShadow = true;
-  raceGroup.add(mesh);
-  raceCoins.push({ mesh, collected: false, localX, z });
+function coinLaneFor(section, index, t) {
+  switch (section.pattern) {
+    case 'warmup': return t < 0.28 ? 0 : Math.sin(t * Math.PI * 5) * 2.7;
+    case 'ribbon': return Math.sin(t * Math.PI * 8) * 3.3;
+    case 'banks': return Math.floor(index / 7) % 2 ? 4.25 : -4.25;
+    case 'gates': return [-3.35, 0, 3.35, 0][Math.floor(index / 4) % 4];
+    case 'breather': return Math.sin(t * Math.PI * 2) * 1.15;
+    case 'rollers': return Math.sin(t * Math.PI * 10) * 2.85;
+    case 'split': return Math.floor(index / 5) % 2 ? 3.8 : -3.8;
+    case 'sprint': return Math.sin(t * Math.PI * 5 + 0.6) * 2.2;
+    case 'shield': return [-3.7, -1.3, 1.3, 3.7][Math.floor(index / 5) % 4];
+    case 'chicane': return [-3.8, 3.8, 1.4, -1.4][Math.floor(index / 4) % 4];
+    case 'dive': return Math.sin(t * Math.PI * 3) * 1.7;
+    case 'circuit': return Math.sin(t * Math.PI * 12) * 3.65;
+    case 'finale': return [0, -3.6, 3.6, 0][Math.floor(index / 4) % 4];
+    default: return 0;
+  }
 }
 
-// Section 1: a readable opening slalom that teaches lateral steering.
-for (let i = 0; i < 8; i++) addRaceCoin(i % 2 ? 2.25 : -2.25, 18 - i * 3.1);
-// Section 2: two high wall lines make the banked pipe worth using.
-for (let i = 0; i < 7; i++) {
-  addRaceCoin(-3.5, -10 - i * 3.5, 0.8);
-  if (i > 2) addRaceCoin(3.5, -10 - i * 3.5, 0.8);
+function coinLiftFor(section, index) {
+  if (section.pattern === 'rollers' || section.pattern === 'dive') {
+    return 0.95 + Math.sin((index % 9) / 8 * Math.PI) * 1.8;
+  }
+  if (section.pattern === 'circuit' && index % 14 > 8) return 2.2;
+  return 0.92;
 }
-// Section 3: an airborne center arc over the densest hazard cluster.
-for (let i = 0; i < 9; i++) addRaceCoin(0, -41 - i * 2.7, 0.9 + Math.sin((i / 8) * Math.PI) * 2.4);
-// Section 4: fast alternating lane choices into the finish.
-for (let i = 0; i < 10; i++) addRaceCoin([0, -2.8, 2.8, 0][i % 4], -70 - i * 3.1, 0.9);
+
+function addRaceCoin(localX, distance, lift = 0.92) {
+  const z = RACE_START_Z - distance;
+  const x = raceCenterX(z) + localX;
+  raceCoins.push({
+    position: new THREE.Vector3(x, raceSurfaceHeight(x, z) + lift, z),
+    collected: false,
+    localX,
+    z,
+    phase: raceCoins.length * 0.37,
+  });
+}
+
+for (const section of COURSE_SECTIONS) {
+  let index = 0;
+  const safeStart = section.start + (section.pattern === 'warmup' ? 36 : 22);
+  for (let distance = safeStart; distance < section.end - 18; distance += section.coinSpacing) {
+    const t = (distance - section.start) / (section.end - section.start);
+    const lane = coinLaneFor(section, index, t);
+    addRaceCoin(lane, distance, coinLiftFor(section, index));
+    // Split Decision deliberately offers two visible risk/reward lines.
+    if (section.pattern === 'split' && index % 3 === 0) addRaceCoin(-lane, distance, 0.92);
+    index += 1;
+  }
+}
+
+const raceObjectMatrix = new THREE.Matrix4();
+const raceObjectQuaternion = new THREE.Quaternion();
+const raceObjectScale = new THREE.Vector3(1, 1, 1);
+const raceCoinMesh = new THREE.InstancedMesh(coinGeometry, coinMaterial, raceCoins.length);
+raceCoinMesh.castShadow = true;
+raceCoinMesh.frustumCulled = false;
+raceGroup.add(raceCoinMesh);
+
+function setRaceCoinInstance(coin, index, spin = 0) {
+  raceObjectQuaternion.setFromEuler(new THREE.Euler(Math.sin(spin + coin.phase) * 0.12, spin + coin.phase, 0));
+  raceObjectScale.setScalar(coin.collected ? 0 : 1);
+  raceObjectMatrix.compose(coin.position, raceObjectQuaternion, raceObjectScale);
+  raceCoinMesh.setMatrixAt(index, raceObjectMatrix);
+}
+
+raceCoins.forEach((coin, index) => setRaceCoinInstance(coin, index));
+raceCoinMesh.instanceMatrix.needsUpdate = true;
 
 const obstacleMaterial = new THREE.MeshPhysicalMaterial({ color: '#a8324f', emissive: '#5e102c', emissiveIntensity: 0.28, roughness: 0.38, clearcoat: 0.58, clearcoatRoughness: 0.2 });
 const raceObstacles = [];
-const obstacleLayout = [
-  { x: 0, z: 9 }, { x: -2.4, z: -14 }, { x: 2.5, z: -28 },
-  { x: -2.1, z: -46 }, { x: 2.1, z: -51 }, { x: 0, z: -60 },
-  { x: -2.8, z: -79 }, { x: 2.7, z: -88 }, { x: 0, z: -97 },
-];
-for (const obstacle of obstacleLayout) {
-  const x = RACE_ORIGIN_X + obstacle.x;
-  const mesh = new THREE.Mesh(new RoundedBoxGeometry(1.6, 1.45, 0.82, 4, 0.14), obstacleMaterial);
-  mesh.position.set(x, raceSurfaceHeight(x, obstacle.z) + 0.72, obstacle.z);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  raceGroup.add(mesh);
-  raceObstacles.push({ ...obstacle, mesh });
+
+function obstacleLaneFor(section, index) {
+  const lanes = section.pattern === 'shield'
+    ? [0, -2.8, 2.8, -1.4, 1.4]
+    : (section.pattern === 'chicane' || section.pattern === 'circuit'
+      ? [-3.4, 3.4, 0, 2.0, -2.0]
+      : [0, 2.8, -2.8, 1.35, -1.35]);
+  return lanes[(index + section.intensity) % lanes.length];
 }
+
+for (const section of COURSE_SECTIONS) {
+  if (!section.hazardSpacing) continue;
+  let index = 0;
+  const firstHazard = section.start + (section.pattern === 'warmup' ? 235 : 64);
+  for (let distance = firstHazard; distance < section.end - 34; distance += section.hazardSpacing) {
+    const z = RACE_START_Z - distance;
+    const localX = obstacleLaneFor(section, index);
+    const x = raceCenterX(z) + localX;
+    const wide = (index + section.intensity) % 5 === 0;
+    raceObstacles.push({
+      position: new THREE.Vector3(x, raceSurfaceHeight(x, z) + 0.72, z),
+      z,
+      localX,
+      halfX: wide ? 1.18 : 0.82,
+      scaleX: wide ? 1.42 : 1,
+      phase: index * 0.8 + section.intensity,
+    });
+    index += 1;
+  }
+}
+
+const obstacleGeometry = new RoundedBoxGeometry(1.6, 1.45, 0.82, isMobileDevice ? 2 : 4, 0.14);
+const raceObstacleMesh = new THREE.InstancedMesh(obstacleGeometry, obstacleMaterial, raceObstacles.length);
+raceObstacleMesh.castShadow = true;
+raceObstacleMesh.receiveShadow = true;
+raceObstacleMesh.frustumCulled = false;
+raceObstacles.forEach((obstacle, index) => {
+  raceObjectQuaternion.setFromEuler(new THREE.Euler(0, Math.sin(obstacle.phase) * 0.08, 0));
+  raceObjectScale.set(obstacle.scaleX, 1, 1);
+  raceObjectMatrix.compose(obstacle.position, raceObjectQuaternion, raceObjectScale);
+  raceObstacleMesh.setMatrixAt(index, raceObjectMatrix);
+});
+raceObstacleMesh.instanceMatrix.needsUpdate = true;
+raceGroup.add(raceObstacleMesh);
 
 const shieldMaterial = new THREE.MeshPhysicalMaterial({ color: '#7feaf5', emissive: '#147a9b', emissiveIntensity: 0.8, roughness: 0.12, metalness: 0.05, clearcoat: 1, clearcoatRoughness: 0.08, transmission: 0.15, thickness: 0.5 });
 const raceShields = [];
-for (const shield of [{ x: 0, z: -34 }, { x: -3.2, z: -72 }]) {
-  const x = RACE_ORIGIN_X + shield.x;
+for (const shield of [
+  { x: 3.4, distance: 1080 }, { x: -3.4, distance: 2025 }, { x: 0, distance: 3160 },
+  { x: -3.2, distance: 4015 }, { x: 3.2, distance: 4775 }, { x: 0, distance: 5750 },
+]) {
+  const z = RACE_START_Z - shield.distance;
+  const x = raceCenterX(z) + shield.x;
   const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.58, 2), shieldMaterial);
-  mesh.position.set(x, raceSurfaceHeight(x, shield.z) + 1.05, shield.z);
+  mesh.position.set(x, raceSurfaceHeight(x, z) + 1.05, z);
   mesh.castShadow = true;
   raceGroup.add(mesh);
-  raceShields.push({ ...shield, mesh, collected: false });
+  raceShields.push({ ...shield, z, baseY: mesh.position.y, mesh, collected: false });
 }
 
-// Repeating hoops give speed parallax and clearly divide the four course beats.
+// Paired hoops announce each pacing beat before its mechanics arrive.
 const hoopMaterial = new THREE.MeshStandardMaterial({ color: '#e9a0b9', roughness: 0.5, envMapIntensity: 0.7 });
-for (const z of [4, -24, -56, -87]) {
-  const hoop = new THREE.Mesh(new THREE.TorusGeometry(6.0, 0.16, 10, 48, Math.PI), hoopMaterial);
-  hoop.position.set(RACE_ORIGIN_X, raceCenterHeight(z) + 1.0, z);
-  hoop.castShadow = true;
-  raceGroup.add(hoop);
+const hoopGeometry = new THREE.TorusGeometry(RACE_HALF_WIDTH + 0.55, 0.16, 10, 48, Math.PI);
+for (const section of COURSE_SECTIONS) {
+  const distances = [section.start + 18, (section.start + section.end) / 2];
+  for (const distance of distances) {
+    const z = RACE_START_Z - distance;
+    const hoop = new THREE.Mesh(hoopGeometry, hoopMaterial);
+    hoop.position.set(raceCenterX(z), raceCenterHeight(z) + 1.05, z);
+    hoop.castShadow = true;
+    raceGroup.add(hoop);
+  }
 }
+
+// A texture-free cloud shelf below the first half makes the 720-unit launch altitude legible.
+const cloudMaterial = new THREE.MeshPhysicalMaterial({
+  color: '#fffaf0', emissive: '#fff1dc', emissiveIntensity: 0.16,
+  roughness: 0.96, metalness: 0, transparent: true, opacity: 0.48,
+  depthWrite: false, envMapIntensity: 0.08,
+});
+const cloudPuffs = [];
+for (let distance = 90, index = 0; distance < 3350; distance += 48, index++) {
+  const z = RACE_START_Z - distance;
+  for (const side of [-1, 1]) {
+    const spread = 16 + (index % 5) * 5;
+    const x = raceCenterX(z) + side * spread;
+    const y = raceCenterHeight(z) + 5 + (index % 4) * 5;
+    cloudPuffs.push({
+      position: new THREE.Vector3(x, y, z + (side > 0 ? 11 : -9)),
+      scale: new THREE.Vector3(7 + index % 4 * 2.1, 5 + index % 3 * 1.35, 8 + index % 5 * 1.6),
+    });
+  }
+}
+const cloudMesh = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 2), cloudMaterial, cloudPuffs.length);
+cloudMesh.frustumCulled = false;
+cloudMesh.renderOrder = 0;
+cloudPuffs.forEach((puff, index) => {
+  raceObjectQuaternion.identity();
+  raceObjectMatrix.compose(puff.position, raceObjectQuaternion, puff.scale);
+  cloudMesh.setMatrixAt(index, raceObjectMatrix);
+});
+cloudMesh.instanceMatrix.needsUpdate = true;
+raceGroup.add(cloudMesh);
 
 // Distant graphic forms keep the horizon composed without adding gameplay noise.
 for (const [x, z, h, color] of [[-15, -21, 7, materials.coral], [14, -24, 10, materials.rose], [1, -30, 5, materials.gold]]) {
@@ -799,12 +968,12 @@ for (const [x, z, h, color] of [[-15, -21, 7, materials.coral], [14, -24, 10, ma
 const playerBody = world.createRigidBody(
   RAPIER.RigidBodyDesc.dynamic()
     .setTranslation(0, 1.4, 5.5)
-    .setLinearDamping(0.28)
-    .setAngularDamping(0.16)
+    .setLinearDamping(0.08)
+    .setAngularDamping(0.1)
     .setCcdEnabled(true)
 );
 const playerCollider = world.createCollider(
-  RAPIER.ColliderDesc.ball(PLAYER_RADIUS).setDensity(1.15).setFriction(1.65).setRestitution(0.08),
+  RAPIER.ColliderDesc.ball(PLAYER_RADIUS).setDensity(1.15).setFriction(2.55).setRestitution(0.03),
   playerBody
 );
 
@@ -905,8 +1074,8 @@ const race = {
   lastCheckpointZ: RACE_START_Z - 4,
   hitCooldown: 0,
   toastTimer: 0,
-  bestTime: readRecord('game-dream-best-time'),
-  bestCoins: readRecord('game-dream-best-coins'),
+  bestTime: readRecord('game-dream-long-course-best-time'),
+  bestCoins: readRecord('game-dream-long-course-best-coins'),
   shieldPickups: 0,
   shieldPops: 0,
   coinCrashes: 0,
@@ -921,8 +1090,8 @@ function formatTime(seconds) {
 
 function writeRecords() {
   try {
-    localStorage.setItem('game-dream-best-time', String(race.bestTime));
-    localStorage.setItem('game-dream-best-coins', String(race.bestCoins));
+    localStorage.setItem('game-dream-long-course-best-time', String(race.bestTime));
+    localStorage.setItem('game-dream-long-course-best-coins', String(race.bestCoins));
   } catch {
     // Records still live for this session if storage is unavailable.
   }
@@ -1038,14 +1207,17 @@ function showRaceBriefing() {
   countdown.classList.add('is-hidden');
   refreshRecordUI();
   setPanel(raceBriefing);
-  teleportPlayer(RACE_ORIGIN_X, RACE_START_Z - 4);
+  const startZ = RACE_START_Z - 4;
+  teleportPlayer(raceCenterX(startZ), startZ);
 }
 
 function resetRaceObjects() {
-  for (const coin of raceCoins) {
+  for (let index = 0; index < raceCoins.length; index++) {
+    const coin = raceCoins[index];
     coin.collected = false;
-    coin.mesh.visible = true;
+    setRaceCoinInstance(coin, index);
   }
+  raceCoinMesh.instanceMatrix.needsUpdate = true;
   for (const shield of raceShields) {
     shield.collected = false;
     shield.mesh.visible = true;
@@ -1069,7 +1241,7 @@ function startRace() {
   raceHud.classList.remove('is-hidden');
   countdown.classList.remove('is-hidden');
   countdownValue.textContent = '3';
-  teleportPlayer(RACE_ORIGIN_X, race.lastCheckpointZ);
+  teleportPlayer(raceCenterX(race.lastCheckpointZ), race.lastCheckpointZ);
   updateRaceHud();
   playTone(420, 0.08, 'sine', 0.1);
   canvas.focus();
@@ -1222,12 +1394,13 @@ function toggleFullscreen() {
 }
 
 function resetPlayer() {
-  if (state.mode.startsWith('race')) teleportPlayer(RACE_ORIGIN_X, race.lastCheckpointZ);
+  if (state.mode.startsWith('race')) teleportPlayer(raceCenterX(race.lastCheckpointZ), race.lastCheckpointZ);
   else teleportPlayer(0, 5.5);
 }
 
 function performJump() {
-  playerBody.applyImpulse({ x: 0, y: playerBody.mass() * 9.2, z: 0 }, true);
+  const velocity = playerBody.linvel();
+  playerBody.setLinvel({ x: velocity.x, y: 11.2, z: velocity.z }, true);
   state.jumpCount += 1;
   state.coyoteTime = 0;
   input.jumpBuffer = 0;
@@ -1239,7 +1412,7 @@ function performTouchJump() {
   if (state.mode !== 'free' && state.mode !== 'race-active') return;
   const velocity = playerBody.linvel();
   const wasAirborne = !state.grounded;
-  playerBody.setLinvel({ x: velocity.x, y: state.mode === 'race-active' ? 11.4 : 9.2, z: velocity.z }, true);
+  playerBody.setLinvel({ x: velocity.x, y: state.mode === 'race-active' ? 11.8 : 11.2, z: velocity.z }, true);
   state.jumpCount += 1;
   if (wasAirborne) state.airJumpCount += 1;
   state.coyoteTime = 0;
@@ -1269,27 +1442,33 @@ resetButton.addEventListener('click', resetPlayer);
 
 function updateRaceHud() {
   const velocity = playerBody.linvel();
+  const section = raceSectionAt(playerBody.translation().z);
   hudTime.textContent = formatTime(Math.max(race.elapsed, 0.0001));
   hudCoins.textContent = String(race.coins);
   hudCheckpoint.textContent = `${race.checkpointIndex} / ${RACE_CHECKPOINT_Z.length}`;
+  hudSection.textContent = section.name.toUpperCase();
   hudShield.classList.toggle('is-active', race.shield);
-  speedFill.style.width = `${THREE.MathUtils.clamp(Math.hypot(velocity.x, velocity.z) / 31, 0, 1) * 100}%`;
+  speedFill.style.width = `${THREE.MathUtils.clamp(Math.hypot(velocity.x, velocity.z) / 62, 0, 1) * 100}%`;
 }
 
 function collectCoin(coin) {
   coin.collected = true;
-  coin.mesh.visible = false;
+  const index = raceCoins.indexOf(coin);
+  setRaceCoinInstance(coin, index);
+  raceCoinMesh.instanceMatrix.needsUpdate = true;
   race.coins += 1;
   const pitch = 720 + (race.coins % 6) * 55;
   playTone(pitch, 0.07, 'sine', 0.07);
   haptic(7);
 }
 
-function hitObstacle() {
+function hitObstacle(position) {
   if (race.hitCooldown > 0) return;
   race.hitCooldown = 0.85;
   const velocity = playerBody.linvel();
-  playerBody.setLinvel({ x: velocity.x * -0.42, y: 7.2, z: Math.min(-5, velocity.z * 0.44) }, true);
+  const hitForward = raceForwardAt(position.z, new THREE.Vector3());
+  const slowedSpeed = Math.max(12, Math.hypot(velocity.x, velocity.z) * 0.38);
+  playerBody.setLinvel({ x: hitForward.x * slowedSpeed, y: 5.8, z: hitForward.z * slowedSpeed }, true);
   if (race.shield) {
     race.shield = false;
     race.shieldPops += 1;
@@ -1309,9 +1488,10 @@ function hitObstacle() {
 function updateRaceGameplay(dt, position) {
   race.hitCooldown = Math.max(0, race.hitCooldown - dt);
   for (const coin of raceCoins) {
-    const dx = position.x - coin.mesh.position.x;
-    const dy = position.y - coin.mesh.position.y;
-    const dz = position.z - coin.mesh.position.z;
+    if (coin.collected || Math.abs(position.z - coin.z) > 1.4) continue;
+    const dx = position.x - coin.position.x;
+    const dy = position.y - coin.position.y;
+    const dz = position.z - coin.position.z;
     if (!coin.collected && dx * dx + dy * dy + dz * dz < 1.5) collectCoin(coin);
   }
   for (const shield of raceShields) {
@@ -1330,8 +1510,8 @@ function updateRaceGameplay(dt, position) {
   }
   if (race.hitCooldown <= 0) {
     for (const obstacle of raceObstacles) {
-      if (Math.abs(position.x - obstacle.mesh.position.x) < 1.22 && Math.abs(position.z - obstacle.z) < 0.92 && Math.abs(position.y - obstacle.mesh.position.y) < 1.55) {
-        hitObstacle();
+      if (Math.abs(position.x - obstacle.position.x) < obstacle.halfX + 0.4 && Math.abs(position.z - obstacle.z) < 1.22 && Math.abs(position.y - obstacle.position.y) < 1.55) {
+        hitObstacle(position);
         break;
       }
     }
@@ -1341,7 +1521,8 @@ function updateRaceGameplay(dt, position) {
   if (nextCheckpoint !== undefined && position.z <= nextCheckpoint) {
     race.checkpointIndex += 1;
     race.lastCheckpointZ = nextCheckpoint - 2.5;
-    showToast(`CHECKPOINT ${race.checkpointIndex} / ${RACE_CHECKPOINT_Z.length}`);
+    const nextSection = COURSE_SECTIONS[Math.min(race.checkpointIndex, COURSE_SECTIONS.length - 1)];
+    showToast(`CHECKPOINT ${race.checkpointIndex} · ${nextSection.name.toUpperCase()}`, 1.7);
     playTone(440, 0.12, 'triangle', 0.1);
     playTone(660, 0.2, 'triangle', 0.09, 0.08);
     haptic(26);
@@ -1370,11 +1551,13 @@ function fixedUpdate(dt) {
     countdownValue.textContent = String(number);
     const held = playerBody.translation();
     playerBody.setLinvel({ x: 0, y: playerBody.linvel().y, z: 0 }, true);
-    if (Math.abs(held.x - RACE_ORIGIN_X) > 0.2 || Math.abs(held.z - race.lastCheckpointZ) > 0.4) teleportPlayer(RACE_ORIGIN_X, race.lastCheckpointZ);
+    const startX = raceCenterX(race.lastCheckpointZ);
+    if (Math.abs(held.x - startX) > 0.2 || Math.abs(held.z - race.lastCheckpointZ) > 0.4) teleportPlayer(startX, race.lastCheckpointZ);
     if (race.countdown <= 0) {
       state.mode = 'race-active';
       countdown.classList.add('is-hidden');
-      playerBody.setLinvel({ x: 0, y: 0, z: -9 }, true);
+      raceForwardAt(race.lastCheckpointZ, forward);
+      playerBody.setLinvel({ x: forward.x * 22, y: 0, z: forward.z * 22 }, true);
       showToast('GO!', 0.8);
       playTone(720, 0.18, 'triangle', 0.14);
       haptic(24);
@@ -1383,20 +1566,28 @@ function fixedUpdate(dt) {
 
   if (state.mode === 'free' || state.mode === 'race-active') {
     const racing = state.mode === 'race-active';
-    forward.set(racing ? 0 : -Math.sin(state.yaw), 0, racing ? -1 : -Math.cos(state.yaw));
+    if (racing) raceForwardAt(position.z, forward);
+    else forward.set(-Math.sin(state.yaw), 0, -Math.cos(state.yaw));
     right.set(-forward.z, 0, forward.x);
     moveDirection.set(0, 0, 0);
     if (racing) {
       race.elapsed += dt;
       moveDirection.add(forward);
       const steer = THREE.MathUtils.clamp(input.touchX + (input.right ? 1 : 0) - (input.left ? 1 : 0), -1, 1);
-      const desiredLateralSpeed = steer * 12.5;
-      const lateralImpulse = (desiredLateralSpeed - velocity.x) * playerBody.mass() * (state.grounded ? 0.105 : 0.068);
-      playerBody.applyImpulse({ x: lateralImpulse, y: 0, z: 0 }, true);
-      const forwardSpeed = Math.max(0, -velocity.z);
-      const speedRoom = THREE.MathUtils.clamp(1 - forwardSpeed / 31, 0.08, 1);
-      playerBody.applyImpulse({ x: 0, y: 0, z: -0.34 * speedRoom }, true);
-      playerBody.applyTorqueImpulse({ x: -0.2 * speedRoom, y: 0, z: -steer * 0.12 }, true);
+      const section = raceSectionAt(position.z);
+      const currentForwardSpeed = Math.max(0, velocity.x * forward.x + velocity.z * forward.z);
+      const currentLateralSpeed = velocity.x * right.x + velocity.z * right.z;
+      const acceleration = currentForwardSpeed < section.speed ? 34 : 72;
+      const nextForwardSpeed = currentForwardSpeed + THREE.MathUtils.clamp(section.speed - currentForwardSpeed, -acceleration * dt, acceleration * dt);
+      const desiredLateralSpeed = steer * (17.5 + section.intensity * 0.45);
+      const grip = state.grounded ? 24 : 8;
+      const nextLateralSpeed = THREE.MathUtils.lerp(currentLateralSpeed, desiredLateralSpeed, 1 - Math.exp(-grip * dt));
+      playerBody.setLinvel({
+        x: forward.x * nextForwardSpeed + right.x * nextLateralSpeed,
+        y: velocity.y,
+        z: forward.z * nextForwardSpeed + right.z * nextLateralSpeed,
+      }, true);
+      playerBody.applyTorqueImpulse({ x: forward.z * 0.24, y: 0, z: -forward.x * 0.24 - steer * 0.13 }, true);
     } else if (isMobileDevice) {
       moveDirection.add(forward);
       moveDirection.addScaledVector(right, input.touchX);
@@ -1434,13 +1625,14 @@ function fixedUpdate(dt) {
   const next = playerBody.translation();
   if (state.mode === 'race-active') updateRaceGameplay(dt, next);
   if (state.mode.startsWith('race')) {
-    if (next.y < raceCenterHeight(next.z) - 9 || Math.abs(next.x - RACE_ORIGIN_X) > 11 || next.z > RACE_START_Z + 10) resetPlayer();
+    if (next.y < raceCenterHeight(next.z) - 12 || Math.abs(next.x - raceCenterX(next.z)) > 13 || next.z > RACE_START_Z + 10) resetPlayer();
   } else if (next.y < -8 || Math.abs(next.x) > 50 || Math.abs(next.z) > 50) resetPlayer();
 }
 
 const cameraTarget = new THREE.Vector3();
 const desiredCamera = new THREE.Vector3();
 const cameraDirection = new THREE.Vector3();
+const raceCameraForward = new THREE.Vector3();
 const smoothTarget = new THREE.Vector3(0, 1.3, 5.5);
 
 function updateVisuals(dt) {
@@ -1455,18 +1647,19 @@ function updateVisuals(dt) {
 
   const raceVisible = raceGroup.visible;
   if (raceVisible) {
+    let coinMatricesChanged = false;
     for (let i = 0; i < raceCoins.length; i++) {
       const coin = raceCoins[i];
-      coin.mesh.rotation.y += dt * 5.8;
-      coin.mesh.rotation.x = Math.sin(state.elapsed * 2.2 + i) * 0.12;
+      if (!coin.collected && Math.abs(coin.z - position.z) < 230) {
+        setRaceCoinInstance(coin, i, state.elapsed * 5.8);
+        coinMatricesChanged = true;
+      }
     }
+    if (coinMatricesChanged) raceCoinMesh.instanceMatrix.needsUpdate = true;
     for (let i = 0; i < raceShields.length; i++) {
       const shield = raceShields[i];
       shield.mesh.rotation.y += dt * 2.8;
-      if (!shield.collected) shield.mesh.position.y = raceSurfaceHeight(RACE_ORIGIN_X + shield.x, shield.z) + 1.05 + Math.sin(state.elapsed * 2.4 + i) * 0.16;
-    }
-    for (let i = 0; i < raceObstacles.length; i++) {
-      raceObstacles[i].mesh.rotation.y = Math.sin(state.elapsed * 1.8 + i * 0.7) * 0.06;
+      if (!shield.collected) shield.mesh.position.y = shield.baseY + Math.sin(state.elapsed * 2.4 + i) * 0.16;
     }
   }
 
@@ -1475,9 +1668,14 @@ function updateVisuals(dt) {
   sun.target.updateMatrixWorld();
 
   if (state.mode.startsWith('race')) {
-    cameraTarget.set(position.x, position.y + 1.35, position.z - 3.6);
+    raceForwardAt(position.z, raceCameraForward);
+    cameraTarget.set(position.x, position.y + 1.35, position.z).addScaledVector(raceCameraForward, 5.2);
     smoothTarget.lerp(cameraTarget, 1 - Math.exp(-dt * 15));
-    desiredCamera.set(smoothTarget.x, smoothTarget.y + 2.65, smoothTarget.z + 8.7);
+    desiredCamera.copy(smoothTarget).addScaledVector(raceCameraForward, -10.2);
+    desiredCamera.y += 2.8;
+    const speed = Math.hypot(playerBody.linvel().x, playerBody.linvel().z);
+    camera.fov = THREE.MathUtils.lerp(camera.fov, 40 + THREE.MathUtils.clamp((speed - 24) / 38, 0, 1) * 9, 1 - Math.exp(-dt * 5));
+    camera.updateProjectionMatrix();
   } else {
     // Aim above the ball so it lives in the lower third and tall architecture remains visible.
     cameraTarget.set(position.x, position.y + 2.1, position.z);
@@ -1489,6 +1687,8 @@ function updateVisuals(dt) {
       smoothTarget.y + Math.sin(state.pitch) * distance + 0.35,
       smoothTarget.z + Math.cos(state.yaw) * horizontal,
     );
+    camera.fov = THREE.MathUtils.lerp(camera.fov, 40, 1 - Math.exp(-dt * 5));
+    camera.updateProjectionMatrix();
   }
 
   cameraDirection.copy(desiredCamera).sub(smoothTarget);
@@ -1504,8 +1704,8 @@ function updateVisuals(dt) {
   if (windGain && windFilter) {
     const speed = Math.hypot(playerBody.linvel().x, playerBody.linvel().z);
     const active = state.mode === 'race-active';
-    windGain.gain.setTargetAtTime(active ? THREE.MathUtils.clamp(speed / 31, 0.03, 0.22) : 0, audioContext.currentTime, 0.08);
-    windFilter.frequency.setTargetAtTime(380 + speed * 38, audioContext.currentTime, 0.1);
+    windGain.gain.setTargetAtTime(active ? THREE.MathUtils.clamp(speed / 60, 0.03, 0.25) : 0, audioContext.currentTime, 0.08);
+    windFilter.frequency.setTargetAtTime(360 + speed * 24, audioContext.currentTime, 0.1);
   }
 }
 
@@ -1556,7 +1756,10 @@ function render(dt = 1 / 60) {
   updateVisuals(dt);
   poolWater.material.uniforms.time.value += dt * 0.42;
   gradePass.uniforms.time.value = performance.now();
-  if (isMobileDevice) renderer.render(scene, camera);
+  // Long-course coordinates eventually exceed the stable depth range of the
+  // GTAO post target. Race Mode uses the native ACES/PBR path for a pristine,
+  // fast image; the contained Free Mode still keeps desktop GTAO and grain.
+  if (isMobileDevice || state.mode.startsWith('race')) renderer.render(scene, camera);
   else composer.render(dt);
 }
 
@@ -1595,8 +1798,10 @@ window.advanceTime = (ms) => {
 window.render_game_to_text = () => {
   const p = playerBody.translation();
   const v = playerBody.linvel();
+  const stateForward = raceForwardAt(p.z, new THREE.Vector3());
+  const stateRight = new THREE.Vector3(-stateForward.z, 0, stateForward.x);
   return JSON.stringify({
-    coordinateSystem: 'Y up; Free Mode uses camera-relative movement; Race Mode runs downhill along negative Z at world X 80',
+    coordinateSystem: 'Y up; Free Mode uses camera-relative movement; Race Mode follows a gently curving centerline toward negative Z from elevation 720 to -400',
     mode: state.mode,
     lastKey: state.lastKey,
     player: {
@@ -1617,6 +1822,16 @@ window.render_game_to_text = () => {
     },
     race: {
       course: 'Sunset Velocity',
+      section: raceSectionAt(p.z).name,
+      sectionIndex: COURSE_SECTIONS.indexOf(raceSectionAt(p.z)) + 1,
+      sectionCount: COURSE_SECTIONS.length,
+      courseLength: RACE_LENGTH,
+      distanceTravelled: +raceDistanceAt(p.z).toFixed(1),
+      elevation: +raceCenterHeight(p.z).toFixed(1),
+      targetSpeed: raceSectionAt(p.z).speed,
+      forwardSpeed: +(v.x * stateForward.x + v.z * stateForward.z).toFixed(2),
+      lateralSpeed: +(v.x * stateRight.x + v.z * stateRight.z).toFixed(2),
+      lateralOffset: +(p.x - raceCenterX(p.z)).toFixed(2),
       elapsed: +race.elapsed.toFixed(3),
       formattedTime: formatTime(Math.max(race.elapsed, 0.0001)),
       countdown: +Math.max(0, race.countdown).toFixed(2),
@@ -1649,7 +1864,7 @@ window.render_game_to_text = () => {
     }),
     environment: { playerMaterial: 'rigid texture-free procedural PBR marble', sky: 'procedural Preetham', sunElevation: skySettings.elevation, water: 'planar reflective', waves: 'three small geometric wave bands, max amplitude 0.046' },
     landmarks: state.mode.startsWith('race')
-      ? ['start gate at (80, 24)', 'checkpoints at z -7, -40, -73', 'finish line at (80, -104)', 'banked half-pipe spans x 74.6 to 85.4']
+      ? [`start gate near (${raceCenterX(RACE_START_Z - 2).toFixed(1)}, ${RACE_START_Z - 2}) at elevation ${raceCenterHeight(RACE_START_Z).toFixed(0)}`, `${RACE_CHECKPOINT_Z.length} checkpoints divide ${COURSE_SECTIONS.length} paced sections`, `finish line at z ${RACE_FINISH_Z} and elevation ${raceCenterHeight(RACE_FINISH_Z).toFixed(0)}`, `6500-unit half-pipe with sweeping centerline curves and high banks`]
       : ['gold arch at (0, -5)', 'rose/coral stairs near (-7, -5)', 'coral arch at (7, -12)'],
   });
 };
