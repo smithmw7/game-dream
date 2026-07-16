@@ -9,18 +9,77 @@
   <body>
     <main id="game-shell">
       <canvas id="game" aria-label="Game Dream 3D canvas"></canvas>
-      <section id="intro" class="panel">
+      <section id="splash" class="panel splash-panel">
+        <div class="splash-orbit" aria-hidden="true"></div>
         <p class="eyebrow">GAME DREAM</p>
-        <h1>Roll into the light.</h1>
-        <p class="instructions">WASD / arrows to roll · Space to jump<br />Drag to look · F for fullscreen</p>
-        <button id="start-button" type="button">Enter dream</button>
+        <h1>Roll beyond<br />the horizon.</h1>
+        <p class="splash-copy">A fast marble playground in light, water, and impossible curves.</p>
+        <div class="mode-actions">
+          <button id="race-mode-button" class="mode-button mode-button-primary" type="button">
+            <span class="mode-kicker">01 · SPEED RUN</span>
+            <strong>Race Mode</strong>
+            <small>Downhill pipe · coins · hazards</small>
+          </button>
+          <button id="free-mode-button" class="mode-button" type="button">
+            <span class="mode-kicker">02 · PLAYGROUND</span>
+            <strong>Free Mode</strong>
+            <small>Explore the original dream</small>
+          </button>
+        </div>
       </section>
+
+      <section id="race-briefing" class="panel is-hidden">
+        <div class="panel-card">
+          <p class="eyebrow">COURSE 01</p>
+          <h2>Sunset<br />Velocity</h2>
+          <p class="panel-copy">Dive through a banked half-pipe. Thread the coin lines, clear every checkpoint, and protect your haul.</p>
+          <div class="record-grid">
+            <div><span>BEST TIME</span><strong id="brief-best-time">--:--.---</strong></div>
+            <div><span>BEST COINS</span><strong id="brief-best-coins">0</strong></div>
+          </div>
+          <p class="control-copy">AUTO FORWARD · DRAG TO STEER · TAP TO JUMP</p>
+          <div class="panel-actions">
+            <button id="race-start-button" class="primary-action" type="button">Start Race</button>
+            <button id="race-back-button" type="button">Back</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="finish-panel" class="panel is-hidden">
+        <div class="panel-card finish-card">
+          <p class="eyebrow">FINISH LINE</p>
+          <h2 id="finish-title">Run complete.</h2>
+          <div class="finish-time" id="finish-time">00:00.000</div>
+          <div class="record-grid">
+            <div><span>COINS SAVED</span><strong id="finish-coins">0 / 0</strong></div>
+            <div><span>BEST TIME</span><strong id="finish-best">--:--.---</strong></div>
+          </div>
+          <p id="finish-record" class="new-record">NEW PERSONAL BEST</p>
+          <div class="panel-actions">
+            <button id="race-replay-button" class="primary-action" type="button">Race Again</button>
+            <button id="finish-free-button" type="button">Free Mode</button>
+          </div>
+        </div>
+      </section>
+
+      <div id="countdown" class="countdown is-hidden" aria-live="assertive"><span id="countdown-value">3</span></div>
+
+      <aside id="race-hud" class="race-hud is-hidden" aria-label="Race status">
+        <div class="hud-course"><span>COURSE 01</span><strong>SUNSET VELOCITY</strong></div>
+        <div class="hud-stat hud-time"><span>TIME</span><strong id="hud-time">00:00.000</strong></div>
+        <div class="hud-stat"><span>COINS</span><strong id="hud-coins">0</strong></div>
+        <div class="hud-stat"><span>CHECKPOINT</span><strong id="hud-checkpoint">0 / 3</strong></div>
+        <div id="hud-shield" class="hud-shield"><span class="shield-dot"></span>SHIELD</div>
+        <div class="speed-track"><i id="speed-fill"></i></div>
+      </aside>
+
+      <div id="race-toast" class="race-toast" aria-live="polite"></div>
       <div id="reticle" aria-hidden="true"></div>
       <div id="fps-display" aria-label="Frames per second"><span id="fps-value">--</span> FPS</div>
       <div id="touch-joystick" class="mobile-only" aria-hidden="true">
         <div id="touch-stick"></div>
       </div>
-      <div id="touch-hint" class="mobile-only" aria-hidden="true">AUTO FORWARD · SLIDE TO STEER · SWIPE UP TO JUMP</div>
+      <div id="touch-hint" class="mobile-only" aria-hidden="true">AUTO FORWARD · DRAG TO STEER · TAP TO JUMP</div>
       <button id="reset-button" type="button" aria-label="Reset ball">Reset</button>
     </main>
     <script type="module" src="/src/main.js"></script>

@@ -14,8 +14,31 @@ import './style.css';
 await RAPIER.init({});
 
 const canvas = document.querySelector('#game');
-const intro = document.querySelector('#intro');
-const startButton = document.querySelector('#start-button');
+const splash = document.querySelector('#splash');
+const freeModeButton = document.querySelector('#free-mode-button');
+const raceModeButton = document.querySelector('#race-mode-button');
+const raceBriefing = document.querySelector('#race-briefing');
+const raceStartButton = document.querySelector('#race-start-button');
+const raceBackButton = document.querySelector('#race-back-button');
+const finishPanel = document.querySelector('#finish-panel');
+const raceReplayButton = document.querySelector('#race-replay-button');
+const finishFreeButton = document.querySelector('#finish-free-button');
+const countdown = document.querySelector('#countdown');
+const countdownValue = document.querySelector('#countdown-value');
+const raceHud = document.querySelector('#race-hud');
+const hudTime = document.querySelector('#hud-time');
+const hudCoins = document.querySelector('#hud-coins');
+const hudCheckpoint = document.querySelector('#hud-checkpoint');
+const hudShield = document.querySelector('#hud-shield');
+const speedFill = document.querySelector('#speed-fill');
+const raceToast = document.querySelector('#race-toast');
+const briefBestTime = document.querySelector('#brief-best-time');
+const briefBestCoins = document.querySelector('#brief-best-coins');
+const finishTitle = document.querySelector('#finish-title');
+const finishTime = document.querySelector('#finish-time');
+const finishCoins = document.querySelector('#finish-coins');
+const finishBest = document.querySelector('#finish-best');
+const finishRecord = document.querySelector('#finish-record');
 const resetButton = document.querySelector('#reset-button');
 const fpsValue = document.querySelector('#fps-value');
 const touchJoystick = document.querySelector('#touch-joystick');
@@ -29,7 +52,7 @@ const isMobileDevice = mobileQuery || Boolean(
 );
 document.body.classList.toggle('is-mobile', isMobileDevice);
 if (isMobileDevice) {
-  document.querySelector('.instructions').innerHTML = 'Auto-roll forward · Slide left or right to steer<br />Swipe up to jump — air jumps allowed';
+  document.querySelector('#touch-hint').textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
 }
 
 const scene = new THREE.Scene();
@@ -111,6 +134,7 @@ sun.shadow.bias = -0.0002;
 sun.shadow.normalBias = 0.035;
 Object.assign(sun.shadow.camera, { left: -18, right: 18, top: 18, bottom: -18, near: 1, far: 42 });
 scene.add(sun);
+scene.add(sun.target);
 scene.add(new THREE.HemisphereLight('#b9e3ef', '#d89770', 0.24));
 
 const world = new RAPIER.World({ x: 0, y: -19.5, z: 0 });
@@ -124,6 +148,8 @@ const materials = {
   poolTile: new THREE.MeshStandardMaterial({ color: '#c8edf0', roughness: 0.32, metalness: 0, envMapIntensity: 0.78, side: THREE.DoubleSide }),
   poolEdge: new THREE.MeshStandardMaterial({ color: '#fff0d1', roughness: 0.52, metalness: 0, envMapIntensity: 0.58 }),
 };
+
+const PLAYER_RADIUS = 0.72;
 
 const RECT_POOL = { x: -7.2, z: 4.6, width: 6.4, depth: 3.7, waterY: -0.17 };
 const ROUND_POOL = { x: 7.1, z: 0.6, radius: 2.72, waterY: -0.17 };
@@ -565,6 +591,204 @@ function updateFloatingWoodPhysics(time) {
   }
 }
 
+const RACE_ORIGIN_X = 80;
+const RACE_START_Z = 26;
+const RACE_FINISH_Z = -104;
+const RACE_HALF_WIDTH = 5.4;
+const RACE_CHECKPOINT_Z = [-7, -40, -73];
+const raceGroup = new THREE.Group();
+raceGroup.visible = false;
+scene.add(raceGroup);
+
+function raceProgressAt(z) {
+  return THREE.MathUtils.clamp((RACE_START_Z - z) / (RACE_START_Z - RACE_FINISH_Z), 0, 1);
+}
+
+function raceCenterHeight(z) {
+  const progress = raceProgressAt(z);
+  return 12.5 - progress * 25.5 + Math.sin(progress * Math.PI * 5.0) * 0.34;
+}
+
+function raceSurfaceHeight(worldX, z) {
+  const progress = raceProgressAt(z);
+  const localX = worldX - RACE_ORIGIN_X;
+  const normalizedX = localX / RACE_HALF_WIDTH;
+  const trough = normalizedX * normalizedX * 4.15;
+  const bank = Math.sin(progress * Math.PI * 5.5) * localX * 0.13;
+  const ripple = Math.sin(progress * Math.PI * 14.0) * 0.12 * (1 - Math.min(1, Math.abs(normalizedX)));
+  return raceCenterHeight(z) + trough + bank + ripple;
+}
+
+function createRaceTrackGeometry() {
+  const xSegments = isMobileDevice ? 18 : 28;
+  const zSegments = isMobileDevice ? 130 : 190;
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+  for (let zi = 0; zi <= zSegments; zi++) {
+    const zT = zi / zSegments;
+    const z = THREE.MathUtils.lerp(RACE_START_Z + 5, RACE_FINISH_Z - 7, zT);
+    for (let xi = 0; xi <= xSegments; xi++) {
+      const xT = xi / xSegments;
+      const worldX = RACE_ORIGIN_X + THREE.MathUtils.lerp(-RACE_HALF_WIDTH, RACE_HALF_WIDTH, xT);
+      positions.push(worldX, raceSurfaceHeight(worldX, z), z);
+      uvs.push(xT, zT * 10);
+    }
+  }
+  const row = xSegments + 1;
+  for (let zi = 0; zi < zSegments; zi++) {
+    for (let xi = 0; xi < xSegments; xi++) {
+      const a = zi * row + xi;
+      const b = a + 1;
+      const c = a + row;
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+const raceTrackGeometry = createRaceTrackGeometry();
+const raceTrackMaterial = new THREE.MeshPhysicalMaterial({
+  color: '#db765f',
+  roughness: 0.56,
+  metalness: 0,
+  clearcoat: 0.36,
+  clearcoatRoughness: 0.3,
+  envMapIntensity: 0.7,
+  side: THREE.DoubleSide,
+});
+raceTrackMaterial.onBeforeCompile = (shader) => {
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying vec2 vRaceUv;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRaceUv = uv;');
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', '#include <common>\nvarying vec2 vRaceUv;')
+    .replace(
+    '#include <color_fragment>',
+    `#include <color_fragment>
+      float raceStripe = smoothstep(0.06, 0.02, abs(vRaceUv.x - 0.5));
+      float raceBands = smoothstep(0.48, 0.5, sin(vRaceUv.y * 3.14159) * 0.5 + 0.5) * 0.09;
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 0.72, 0.38), raceStripe * 0.7);
+      diffuseColor.rgb += raceBands;
+    `,
+  );
+};
+raceTrackMaterial.customProgramCacheKey = () => 'game-dream-race-track-v1';
+const raceTrack = new THREE.Mesh(raceTrackGeometry, raceTrackMaterial);
+raceTrack.receiveShadow = true;
+raceGroup.add(raceTrack);
+
+const raceTrackBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+world.createCollider(
+  RAPIER.ColliderDesc.trimesh(
+    new Float32Array(raceTrackGeometry.attributes.position.array),
+    new Uint32Array(raceTrackGeometry.index.array),
+  ).setFriction(1.55),
+  raceTrackBody,
+);
+
+const raceGateMaterial = new THREE.MeshPhysicalMaterial({ color: '#ffdc85', roughness: 0.28, clearcoat: 0.7, clearcoatRoughness: 0.16, envMapIntensity: 1.15 });
+const finishDarkMaterial = new THREE.MeshStandardMaterial({ color: '#443448', roughness: 0.48 });
+const finishLightMaterial = new THREE.MeshStandardMaterial({ color: '#fff1d4', roughness: 0.42 });
+
+function addRaceGate(z, finish = false) {
+  const group = new THREE.Group();
+  const postHeight = 3.0;
+  for (const side of [-1, 1]) {
+    const x = RACE_ORIGIN_X + side * (RACE_HALF_WIDTH - 0.2);
+    const post = new THREE.Mesh(new RoundedBoxGeometry(0.26, postHeight, 0.34, 3, 0.06), finish ? finishDarkMaterial : raceGateMaterial);
+    post.position.set(x, raceSurfaceHeight(x, z) + postHeight / 2, z);
+    post.castShadow = true;
+    group.add(post);
+  }
+  const beamY = raceCenterHeight(z) + 6.35;
+  const beam = new THREE.Mesh(new RoundedBoxGeometry(RACE_HALF_WIDTH * 2, 0.34, 0.42, 3, 0.07), finish ? finishLightMaterial : raceGateMaterial);
+  beam.position.set(RACE_ORIGIN_X, beamY, z);
+  beam.castShadow = true;
+  group.add(beam);
+  if (finish) {
+    for (let i = 0; i < 12; i++) {
+      const tile = new THREE.Mesh(new THREE.BoxGeometry(0.74, 0.17, 0.44), i % 2 ? finishDarkMaterial : finishLightMaterial);
+      tile.position.set(RACE_ORIGIN_X - 4.05 + i * 0.74, beamY, z - 0.02);
+      group.add(tile);
+    }
+  }
+  raceGroup.add(group);
+  return group;
+}
+
+addRaceGate(RACE_START_Z - 2);
+RACE_CHECKPOINT_Z.forEach((z) => addRaceGate(z));
+addRaceGate(RACE_FINISH_Z, true);
+
+const raceCoins = [];
+const coinGeometry = new THREE.TorusGeometry(0.32, 0.105, 10, 24);
+const coinMaterial = new THREE.MeshPhysicalMaterial({ color: '#ffd659', emissive: '#b95d12', emissiveIntensity: 0.42, roughness: 0.22, metalness: 0.46, clearcoat: 0.8, clearcoatRoughness: 0.12 });
+
+function addRaceCoin(localX, z, lift = 0.9) {
+  const x = RACE_ORIGIN_X + localX;
+  const mesh = new THREE.Mesh(coinGeometry, coinMaterial);
+  mesh.position.set(x, raceSurfaceHeight(x, z) + lift, z);
+  mesh.castShadow = true;
+  raceGroup.add(mesh);
+  raceCoins.push({ mesh, collected: false, localX, z });
+}
+
+// Section 1: a readable opening slalom that teaches lateral steering.
+for (let i = 0; i < 8; i++) addRaceCoin(i % 2 ? 2.25 : -2.25, 18 - i * 3.1);
+// Section 2: two high wall lines make the banked pipe worth using.
+for (let i = 0; i < 7; i++) {
+  addRaceCoin(-3.5, -10 - i * 3.5, 0.8);
+  if (i > 2) addRaceCoin(3.5, -10 - i * 3.5, 0.8);
+}
+// Section 3: an airborne center arc over the densest hazard cluster.
+for (let i = 0; i < 9; i++) addRaceCoin(0, -41 - i * 2.7, 0.9 + Math.sin((i / 8) * Math.PI) * 2.4);
+// Section 4: fast alternating lane choices into the finish.
+for (let i = 0; i < 10; i++) addRaceCoin([0, -2.8, 2.8, 0][i % 4], -70 - i * 3.1, 0.9);
+
+const obstacleMaterial = new THREE.MeshPhysicalMaterial({ color: '#a8324f', emissive: '#5e102c', emissiveIntensity: 0.28, roughness: 0.38, clearcoat: 0.58, clearcoatRoughness: 0.2 });
+const raceObstacles = [];
+const obstacleLayout = [
+  { x: 0, z: 9 }, { x: -2.4, z: -14 }, { x: 2.5, z: -28 },
+  { x: -2.1, z: -46 }, { x: 2.1, z: -51 }, { x: 0, z: -60 },
+  { x: -2.8, z: -79 }, { x: 2.7, z: -88 }, { x: 0, z: -97 },
+];
+for (const obstacle of obstacleLayout) {
+  const x = RACE_ORIGIN_X + obstacle.x;
+  const mesh = new THREE.Mesh(new RoundedBoxGeometry(1.6, 1.45, 0.82, 4, 0.14), obstacleMaterial);
+  mesh.position.set(x, raceSurfaceHeight(x, obstacle.z) + 0.72, obstacle.z);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  raceGroup.add(mesh);
+  raceObstacles.push({ ...obstacle, mesh });
+}
+
+const shieldMaterial = new THREE.MeshPhysicalMaterial({ color: '#7feaf5', emissive: '#147a9b', emissiveIntensity: 0.8, roughness: 0.12, metalness: 0.05, clearcoat: 1, clearcoatRoughness: 0.08, transmission: 0.15, thickness: 0.5 });
+const raceShields = [];
+for (const shield of [{ x: 0, z: -34 }, { x: -3.2, z: -72 }]) {
+  const x = RACE_ORIGIN_X + shield.x;
+  const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.58, 2), shieldMaterial);
+  mesh.position.set(x, raceSurfaceHeight(x, shield.z) + 1.05, shield.z);
+  mesh.castShadow = true;
+  raceGroup.add(mesh);
+  raceShields.push({ ...shield, mesh, collected: false });
+}
+
+// Repeating hoops give speed parallax and clearly divide the four course beats.
+const hoopMaterial = new THREE.MeshStandardMaterial({ color: '#e9a0b9', roughness: 0.5, envMapIntensity: 0.7 });
+for (const z of [4, -24, -56, -87]) {
+  const hoop = new THREE.Mesh(new THREE.TorusGeometry(6.0, 0.16, 10, 48, Math.PI), hoopMaterial);
+  hoop.position.set(RACE_ORIGIN_X, raceCenterHeight(z) + 1.0, z);
+  hoop.castShadow = true;
+  raceGroup.add(hoop);
+}
+
 // Distant graphic forms keep the horizon composed without adding gameplay noise.
 for (const [x, z, h, color] of [[-15, -21, 7, materials.coral], [14, -24, 10, materials.rose], [1, -30, 5, materials.gold]]) {
   const tower = shadowed(new THREE.Mesh(new THREE.BoxGeometry(3.2, h, 3.2), color));
@@ -572,7 +796,6 @@ for (const [x, z, h, color] of [[-15, -21, 7, materials.coral], [14, -24, 10, ma
   scene.add(tower);
 }
 
-const PLAYER_RADIUS = 0.72;
 const playerBody = world.createRigidBody(
   RAPIER.RigidBodyDesc.dynamic()
     .setTranslation(0, 1.4, 5.5)
@@ -659,28 +882,243 @@ ball.renderOrder = 2;
 scene.add(ball);
 
 const input = { forward: false, back: false, left: false, right: false, touchX: 0, jumpBuffer: 0 };
-const state = { started: false, grounded: false, coyoteTime: 0, jumpCount: 0, airJumpCount: 0, lastKey: '', elapsed: 0, yaw: 0, pitch: 0.18, dragging: false, fps: 0, touchJumpCooldown: 0 };
+const state = {
+  mode: 'splash', started: false, grounded: false, coyoteTime: 0, jumpCount: 0,
+  airJumpCount: 0, lastKey: '', elapsed: 0, yaw: 0, pitch: 0.18,
+  dragging: false, fps: 0, touchJumpCooldown: 0,
+};
 const keyMap = {
   KeyW: 'forward', ArrowUp: 'forward', KeyS: 'back', ArrowDown: 'back',
   KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right',
 };
 
-function beginGame() {
-  if (state.started) return;
+function readRecord(key) {
+  try { return Number(localStorage.getItem(key)) || 0; } catch { return 0; }
+}
+
+const race = {
+  elapsed: 0,
+  countdown: 0,
+  coins: 0,
+  shield: false,
+  checkpointIndex: 0,
+  lastCheckpointZ: RACE_START_Z - 4,
+  hitCooldown: 0,
+  toastTimer: 0,
+  bestTime: readRecord('game-dream-best-time'),
+  bestCoins: readRecord('game-dream-best-coins'),
+  shieldPickups: 0,
+  shieldPops: 0,
+  coinCrashes: 0,
+};
+
+function formatTime(seconds) {
+  if (!seconds) return '--:--.---';
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds - minutes * 60;
+  return `${String(minutes).padStart(2, '0')}:${remainder.toFixed(3).padStart(6, '0')}`;
+}
+
+function writeRecords() {
+  try {
+    localStorage.setItem('game-dream-best-time', String(race.bestTime));
+    localStorage.setItem('game-dream-best-coins', String(race.bestCoins));
+  } catch {
+    // Records still live for this session if storage is unavailable.
+  }
+}
+
+function refreshRecordUI() {
+  briefBestTime.textContent = formatTime(race.bestTime);
+  briefBestCoins.textContent = String(race.bestCoins);
+  finishBest.textContent = formatTime(race.bestTime);
+}
+
+function setPanel(panel) {
+  for (const item of [splash, raceBriefing, finishPanel]) item.classList.toggle('is-hidden', item !== panel);
+}
+
+function showToast(message, duration = 1.25) {
+  raceToast.textContent = message;
+  raceToast.classList.add('is-visible');
+  race.toastTimer = duration;
+}
+
+let audioContext;
+let audioMaster;
+let windGain;
+let windFilter;
+
+function ensureAudio() {
+  if (!audioContext) {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    audioContext = new AudioContext();
+    audioMaster = audioContext.createGain();
+    audioMaster.gain.value = 0.32;
+    audioMaster.connect(audioContext.destination);
+
+    const length = audioContext.sampleRate * 2;
+    const buffer = audioContext.createBuffer(1, length, audioContext.sampleRate);
+    const noise = buffer.getChannelData(0);
+    for (let i = 0; i < length; i++) noise[i] = Math.random() * 2 - 1;
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    windFilter = audioContext.createBiquadFilter();
+    windFilter.type = 'bandpass';
+    windFilter.frequency.value = 480;
+    windFilter.Q.value = 0.7;
+    windGain = audioContext.createGain();
+    windGain.gain.value = 0;
+    source.connect(windFilter).connect(windGain).connect(audioMaster);
+    source.start();
+  }
+  if (audioContext.state === 'suspended') audioContext.resume();
+}
+
+function playTone(frequency, duration = 0.1, type = 'sine', volume = 0.14, delay = 0) {
+  ensureAudio();
+  if (!audioContext) return;
+  const start = audioContext.currentTime + delay;
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+  oscillator.type = type;
+  oscillator.frequency.setValueAtTime(frequency, start);
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.exponentialRampToValueAtTime(volume, start + 0.008);
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+  oscillator.connect(gain).connect(audioMaster);
+  oscillator.start(start);
+  oscillator.stop(start + duration + 0.02);
+}
+
+function haptic(pattern) {
+  navigator.vibrate?.(pattern);
+}
+
+function teleportPlayer(x, z) {
+  const y = state.mode.startsWith('race') ? raceSurfaceHeight(x, z) + PLAYER_RADIUS + 0.18 : 1.4;
+  playerBody.setTranslation({ x, y, z }, true);
+  playerBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  playerBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  playerBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+  state.touchJumpCooldown = 0;
+}
+
+function showSplash() {
+  state.mode = 'splash';
+  state.started = false;
+  raceGroup.visible = false;
+  raceHud.classList.add('is-hidden');
+  countdown.classList.add('is-hidden');
+  setPanel(splash);
+}
+
+function startFreeMode() {
+  ensureAudio();
+  state.mode = 'free';
   state.started = true;
-  intro.classList.add('is-hidden');
+  state.yaw = 0;
+  state.pitch = 0.18;
+  raceGroup.visible = false;
+  raceHud.classList.add('is-hidden');
+  countdown.classList.add('is-hidden');
+  setPanel(null);
+  teleportPlayer(0, 5.5);
   canvas.focus();
+}
+
+function showRaceBriefing() {
+  ensureAudio();
+  state.mode = 'race-briefing';
+  state.started = false;
+  raceGroup.visible = true;
+  raceHud.classList.add('is-hidden');
+  countdown.classList.add('is-hidden');
+  refreshRecordUI();
+  setPanel(raceBriefing);
+  teleportPlayer(RACE_ORIGIN_X, RACE_START_Z - 4);
+}
+
+function resetRaceObjects() {
+  for (const coin of raceCoins) {
+    coin.collected = false;
+    coin.mesh.visible = true;
+  }
+  for (const shield of raceShields) {
+    shield.collected = false;
+    shield.mesh.visible = true;
+  }
+}
+
+function startRace() {
+  ensureAudio();
+  resetRaceObjects();
+  Object.assign(race, {
+    elapsed: 0, countdown: 3.25, coins: 0, shield: false,
+    checkpointIndex: 0, lastCheckpointZ: RACE_START_Z - 4,
+    hitCooldown: 0, toastTimer: 0, shieldPickups: 0, shieldPops: 0, coinCrashes: 0,
+  });
+  state.mode = 'race-countdown';
+  state.started = true;
+  state.yaw = 0;
+  state.pitch = 0.16;
+  raceGroup.visible = true;
+  setPanel(null);
+  raceHud.classList.remove('is-hidden');
+  countdown.classList.remove('is-hidden');
+  countdownValue.textContent = '3';
+  teleportPlayer(RACE_ORIGIN_X, race.lastCheckpointZ);
+  updateRaceHud();
+  playTone(420, 0.08, 'sine', 0.1);
+  canvas.focus();
+}
+
+function finishRace() {
+  if (state.mode !== 'race-active') return;
+  state.mode = 'race-finished';
+  state.started = false;
+  playerBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  playerBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  playerBody.sleep();
+  const newBestTime = !race.bestTime || race.elapsed < race.bestTime;
+  const newBestCoins = race.coins > race.bestCoins;
+  if (newBestTime) race.bestTime = race.elapsed;
+  if (newBestCoins) race.bestCoins = race.coins;
+  writeRecords();
+  refreshRecordUI();
+  finishTitle.textContent = newBestTime ? 'New fastest run.' : 'Run complete.';
+  finishTime.textContent = formatTime(race.elapsed);
+  finishCoins.textContent = `${race.coins} / ${raceCoins.length}`;
+  finishRecord.textContent = newBestTime ? 'NEW PERSONAL BEST' : (newBestCoins ? 'NEW COIN RECORD' : 'RUN SAVED');
+  raceHud.classList.add('is-hidden');
+  countdown.classList.add('is-hidden');
+  setPanel(finishPanel);
+  showToast('FINISH!');
+  playTone(523, 0.32, 'triangle', 0.16);
+  playTone(659, 0.34, 'triangle', 0.14, 0.12);
+  playTone(784, 0.5, 'triangle', 0.13, 0.25);
+  haptic([30, 35, 30, 35, 90]);
 }
 
 addEventListener('keydown', (event) => {
   state.lastKey = `${event.code}:${event.key}`;
+  if (event.code === 'Enter' && state.mode === 'race-briefing') {
+    startRace();
+    event.preventDefault();
+    return;
+  }
+  if (event.code === 'Enter' && state.mode === 'race-finished') {
+    startRace();
+    event.preventDefault();
+    return;
+  }
   if (keyMap[event.code]) {
-    beginGame();
     input[keyMap[event.code]] = true;
     event.preventDefault();
   }
   if ((event.code === 'Space' || event.code === 'Spacebar' || event.key === ' ' || event.key === 'Space') && !event.repeat) {
-    beginGame();
     requestJump();
     event.preventDefault();
   }
@@ -698,6 +1136,8 @@ const touchControl = {
   originY: 0,
   lastX: 0,
   lastY: 0,
+  startedAt: 0,
+  maxDistance: 0,
   jumpTriggered: false,
 };
 
@@ -714,6 +1154,11 @@ function maybeTriggerTouchJump(clientX, clientY) {
 function endTouchPointer(event) {
   if (event.pointerId !== touchControl.id) return;
   maybeTriggerTouchJump(event.clientX, event.clientY);
+  const distance = Math.hypot(event.clientX - touchControl.originX, event.clientY - touchControl.originY);
+  if (!touchControl.jumpTriggered && performance.now() - touchControl.startedAt < 280 && Math.max(distance, touchControl.maxDistance) < 22) {
+    performTouchJump();
+    touchControl.jumpTriggered = true;
+  }
   touchControl.id = null;
   input.touchX = 0;
   touchStick.style.transform = 'translateX(0px)';
@@ -722,19 +1167,21 @@ function endTouchPointer(event) {
 }
 
 canvas.addEventListener('pointerdown', (event) => {
-  beginGame();
+  if (state.mode === 'splash' || state.mode === 'race-briefing' || state.mode === 'race-finished') return;
   try {
     canvas.setPointerCapture(event.pointerId);
   } catch {
     // Synthetic tests and a few embedded browsers can reject pointer capture;
     // the gesture still works because events remain bound to the canvas.
   }
-  if (isMobileDevice) {
+  if (isMobileDevice || state.mode.startsWith('race')) {
     event.preventDefault();
     if (touchControl.id !== null) return;
     touchControl.id = event.pointerId;
     touchControl.originX = touchControl.lastX = event.clientX;
     touchControl.originY = touchControl.lastY = event.clientY;
+    touchControl.startedAt = performance.now();
+    touchControl.maxDistance = 0;
     touchControl.jumpTriggered = false;
     touchJoystick.style.left = `${THREE.MathUtils.clamp(event.clientX, 88, innerWidth - 88)}px`;
     touchJoystick.style.top = `${THREE.MathUtils.clamp(event.clientY, 46, innerHeight - 46)}px`;
@@ -745,7 +1192,7 @@ canvas.addEventListener('pointerdown', (event) => {
 });
 
 canvas.addEventListener('pointerup', (event) => {
-  if (isMobileDevice) endTouchPointer(event);
+  if (isMobileDevice || state.mode.startsWith('race')) endTouchPointer(event);
   else {
     state.dragging = false;
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
@@ -754,16 +1201,17 @@ canvas.addEventListener('pointerup', (event) => {
 canvas.addEventListener('pointercancel', endTouchPointer);
 
 canvas.addEventListener('pointermove', (event) => {
-  if (isMobileDevice && event.pointerId === touchControl.id) {
+  if ((isMobileDevice || state.mode.startsWith('race')) && event.pointerId === touchControl.id) {
     touchControl.lastX = event.clientX;
     touchControl.lastY = event.clientY;
     const dx = THREE.MathUtils.clamp(event.clientX - touchControl.originX, -64, 64);
+    touchControl.maxDistance = Math.max(touchControl.maxDistance, Math.hypot(event.clientX - touchControl.originX, event.clientY - touchControl.originY));
     input.touchX = dx / 64;
     touchStick.style.transform = `translateX(${dx}px)`;
     maybeTriggerTouchJump(event.clientX, event.clientY);
     return;
   }
-  if (!state.dragging) return;
+  if (!state.dragging || state.mode !== 'free') return;
   state.yaw -= event.movementX * 0.005;
   state.pitch = THREE.MathUtils.clamp(state.pitch - event.movementY * 0.004, 0.06, 0.7);
 });
@@ -774,11 +1222,8 @@ function toggleFullscreen() {
 }
 
 function resetPlayer() {
-  playerBody.setTranslation({ x: 0, y: 1.4, z: 5.5 }, true);
-  playerBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
-  playerBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
-  playerBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
-  state.touchJumpCooldown = 0;
+  if (state.mode.startsWith('race')) teleportPlayer(RACE_ORIGIN_X, race.lastCheckpointZ);
+  else teleportPlayer(0, 5.5);
 }
 
 function performJump() {
@@ -786,28 +1231,124 @@ function performJump() {
   state.jumpCount += 1;
   state.coyoteTime = 0;
   input.jumpBuffer = 0;
+  playTone(240, 0.11, 'triangle', 0.08);
+  haptic(12);
 }
 
 function performTouchJump() {
+  if (state.mode !== 'free' && state.mode !== 'race-active') return;
   const velocity = playerBody.linvel();
   const wasAirborne = !state.grounded;
-  playerBody.setLinvel({ x: velocity.x, y: 9.2, z: velocity.z }, true);
+  playerBody.setLinvel({ x: velocity.x, y: state.mode === 'race-active' ? 11.4 : 9.2, z: velocity.z }, true);
   state.jumpCount += 1;
   if (wasAirborne) state.airJumpCount += 1;
   state.coyoteTime = 0;
   state.touchJumpCooldown = 0.12;
   input.jumpBuffer = 0;
+  playTone(wasAirborne ? 330 : 260, 0.1, 'triangle', 0.08);
+  haptic(12);
 }
 
 function requestJump() {
+  if (state.mode === 'race-active') {
+    performTouchJump();
+    return;
+  }
+  if (state.mode !== 'free') return;
   if (state.grounded || state.coyoteTime > 0) performJump();
   else input.jumpBuffer = 0.25;
 }
 
-startButton.addEventListener('click', () => {
-  beginGame();
-});
+freeModeButton.addEventListener('click', startFreeMode);
+raceModeButton.addEventListener('click', showRaceBriefing);
+raceStartButton.addEventListener('click', startRace);
+raceBackButton.addEventListener('click', showSplash);
+raceReplayButton.addEventListener('click', startRace);
+finishFreeButton.addEventListener('click', startFreeMode);
 resetButton.addEventListener('click', resetPlayer);
+
+function updateRaceHud() {
+  const velocity = playerBody.linvel();
+  hudTime.textContent = formatTime(Math.max(race.elapsed, 0.0001));
+  hudCoins.textContent = String(race.coins);
+  hudCheckpoint.textContent = `${race.checkpointIndex} / ${RACE_CHECKPOINT_Z.length}`;
+  hudShield.classList.toggle('is-active', race.shield);
+  speedFill.style.width = `${THREE.MathUtils.clamp(Math.hypot(velocity.x, velocity.z) / 31, 0, 1) * 100}%`;
+}
+
+function collectCoin(coin) {
+  coin.collected = true;
+  coin.mesh.visible = false;
+  race.coins += 1;
+  const pitch = 720 + (race.coins % 6) * 55;
+  playTone(pitch, 0.07, 'sine', 0.07);
+  haptic(7);
+}
+
+function hitObstacle() {
+  if (race.hitCooldown > 0) return;
+  race.hitCooldown = 0.85;
+  const velocity = playerBody.linvel();
+  playerBody.setLinvel({ x: velocity.x * -0.42, y: 7.2, z: Math.min(-5, velocity.z * 0.44) }, true);
+  if (race.shield) {
+    race.shield = false;
+    race.shieldPops += 1;
+    showToast('SHIELD POP! · COINS SAFE');
+    playTone(190, 0.22, 'sawtooth', 0.11);
+    playTone(580, 0.12, 'square', 0.07, 0.06);
+    haptic([35, 18, 55]);
+  } else {
+    race.coinCrashes += 1;
+    race.coins = 0;
+    showToast('CRASH! · COINS LOST');
+    playTone(120, 0.34, 'sawtooth', 0.14);
+    haptic([75, 30, 80]);
+  }
+}
+
+function updateRaceGameplay(dt, position) {
+  race.hitCooldown = Math.max(0, race.hitCooldown - dt);
+  for (const coin of raceCoins) {
+    const dx = position.x - coin.mesh.position.x;
+    const dy = position.y - coin.mesh.position.y;
+    const dz = position.z - coin.mesh.position.z;
+    if (!coin.collected && dx * dx + dy * dy + dz * dz < 1.5) collectCoin(coin);
+  }
+  for (const shield of raceShields) {
+    const dx = position.x - shield.mesh.position.x;
+    const dy = position.y - shield.mesh.position.y;
+    const dz = position.z - shield.mesh.position.z;
+    if (shield.collected || dx * dx + dy * dy + dz * dz >= 2.05) continue;
+    shield.collected = true;
+    shield.mesh.visible = false;
+    race.shield = true;
+    race.shieldPickups += 1;
+    showToast('SHIELD READY');
+    playTone(520, 0.14, 'triangle', 0.11);
+    playTone(880, 0.2, 'sine', 0.08, 0.07);
+    haptic([16, 18, 16]);
+  }
+  if (race.hitCooldown <= 0) {
+    for (const obstacle of raceObstacles) {
+      if (Math.abs(position.x - obstacle.mesh.position.x) < 1.22 && Math.abs(position.z - obstacle.z) < 0.92 && Math.abs(position.y - obstacle.mesh.position.y) < 1.55) {
+        hitObstacle();
+        break;
+      }
+    }
+  }
+
+  const nextCheckpoint = RACE_CHECKPOINT_Z[race.checkpointIndex];
+  if (nextCheckpoint !== undefined && position.z <= nextCheckpoint) {
+    race.checkpointIndex += 1;
+    race.lastCheckpointZ = nextCheckpoint - 2.5;
+    showToast(`CHECKPOINT ${race.checkpointIndex} / ${RACE_CHECKPOINT_Z.length}`);
+    playTone(440, 0.12, 'triangle', 0.1);
+    playTone(660, 0.2, 'triangle', 0.09, 0.08);
+    haptic(26);
+  }
+  if (position.z <= RACE_FINISH_Z) finishRace();
+  updateRaceHud();
+}
 
 const moveDirection = new THREE.Vector3();
 const forward = new THREE.Vector3();
@@ -823,11 +1364,40 @@ function fixedUpdate(dt) {
   state.grounded = Boolean(groundHit) && velocity.y < 1.2;
   state.coyoteTime = state.grounded ? 0.1 : Math.max(0, state.coyoteTime - dt);
 
-  if (state.started) {
-    forward.set(-Math.sin(state.yaw), 0, -Math.cos(state.yaw));
+  if (state.mode === 'race-countdown') {
+    race.countdown -= dt;
+    const number = Math.max(1, Math.ceil(race.countdown));
+    countdownValue.textContent = String(number);
+    const held = playerBody.translation();
+    playerBody.setLinvel({ x: 0, y: playerBody.linvel().y, z: 0 }, true);
+    if (Math.abs(held.x - RACE_ORIGIN_X) > 0.2 || Math.abs(held.z - race.lastCheckpointZ) > 0.4) teleportPlayer(RACE_ORIGIN_X, race.lastCheckpointZ);
+    if (race.countdown <= 0) {
+      state.mode = 'race-active';
+      countdown.classList.add('is-hidden');
+      playerBody.setLinvel({ x: 0, y: 0, z: -9 }, true);
+      showToast('GO!', 0.8);
+      playTone(720, 0.18, 'triangle', 0.14);
+      haptic(24);
+    }
+  }
+
+  if (state.mode === 'free' || state.mode === 'race-active') {
+    const racing = state.mode === 'race-active';
+    forward.set(racing ? 0 : -Math.sin(state.yaw), 0, racing ? -1 : -Math.cos(state.yaw));
     right.set(-forward.z, 0, forward.x);
     moveDirection.set(0, 0, 0);
-    if (isMobileDevice) {
+    if (racing) {
+      race.elapsed += dt;
+      moveDirection.add(forward);
+      const steer = THREE.MathUtils.clamp(input.touchX + (input.right ? 1 : 0) - (input.left ? 1 : 0), -1, 1);
+      const desiredLateralSpeed = steer * 12.5;
+      const lateralImpulse = (desiredLateralSpeed - velocity.x) * playerBody.mass() * (state.grounded ? 0.105 : 0.068);
+      playerBody.applyImpulse({ x: lateralImpulse, y: 0, z: 0 }, true);
+      const forwardSpeed = Math.max(0, -velocity.z);
+      const speedRoom = THREE.MathUtils.clamp(1 - forwardSpeed / 31, 0.08, 1);
+      playerBody.applyImpulse({ x: 0, y: 0, z: -0.34 * speedRoom }, true);
+      playerBody.applyTorqueImpulse({ x: -0.2 * speedRoom, y: 0, z: -steer * 0.12 }, true);
+    } else if (isMobileDevice) {
       moveDirection.add(forward);
       moveDirection.addScaledVector(right, input.touchX);
     } else {
@@ -837,7 +1407,7 @@ function fixedUpdate(dt) {
       if (input.left) moveDirection.sub(right);
     }
 
-    if (moveDirection.lengthSq() > 0) {
+    if (!racing && moveDirection.lengthSq() > 0) {
       const moveStrength = Math.min(1, moveDirection.length());
       moveDirection.normalize();
       const horizontalSpeed = Math.hypot(velocity.x, velocity.z);
@@ -853,12 +1423,19 @@ function fixedUpdate(dt) {
   }
   input.jumpBuffer = Math.max(0, input.jumpBuffer - dt);
   state.touchJumpCooldown = Math.max(0, state.touchJumpCooldown - dt);
+  if (race.toastTimer > 0) {
+    race.toastTimer = Math.max(0, race.toastTimer - dt);
+    if (race.toastTimer === 0) raceToast.classList.remove('is-visible');
+  }
 
   updateFloatingWoodPhysics(state.elapsed);
   world.step();
 
   const next = playerBody.translation();
-  if (next.y < -8 || Math.abs(next.x) > 50 || Math.abs(next.z) > 50) resetPlayer();
+  if (state.mode === 'race-active') updateRaceGameplay(dt, next);
+  if (state.mode.startsWith('race')) {
+    if (next.y < raceCenterHeight(next.z) - 9 || Math.abs(next.x - RACE_ORIGIN_X) > 11 || next.z > RACE_START_Z + 10) resetPlayer();
+  } else if (next.y < -8 || Math.abs(next.x) > 50 || Math.abs(next.z) > 50) resetPlayer();
 }
 
 const cameraTarget = new THREE.Vector3();
@@ -876,17 +1453,43 @@ function updateVisuals(dt) {
     block.mesh.position.set(blockPosition.x, blockPosition.y, blockPosition.z);
   }
 
-  // Aim above the ball so it lives in the lower third and tall architecture remains visible.
-  cameraTarget.set(position.x, position.y + 2.1, position.z);
-  smoothTarget.lerp(cameraTarget, 1 - Math.exp(-dt * 11));
+  const raceVisible = raceGroup.visible;
+  if (raceVisible) {
+    for (let i = 0; i < raceCoins.length; i++) {
+      const coin = raceCoins[i];
+      coin.mesh.rotation.y += dt * 5.8;
+      coin.mesh.rotation.x = Math.sin(state.elapsed * 2.2 + i) * 0.12;
+    }
+    for (let i = 0; i < raceShields.length; i++) {
+      const shield = raceShields[i];
+      shield.mesh.rotation.y += dt * 2.8;
+      if (!shield.collected) shield.mesh.position.y = raceSurfaceHeight(RACE_ORIGIN_X + shield.x, shield.z) + 1.05 + Math.sin(state.elapsed * 2.4 + i) * 0.16;
+    }
+    for (let i = 0; i < raceObstacles.length; i++) {
+      raceObstacles[i].mesh.rotation.y = Math.sin(state.elapsed * 1.8 + i * 0.7) * 0.06;
+    }
+  }
 
-  const distance = 11.5;
-  const horizontal = Math.cos(state.pitch) * distance;
-  desiredCamera.set(
-    smoothTarget.x + Math.sin(state.yaw) * horizontal,
-    smoothTarget.y + Math.sin(state.pitch) * distance + 0.35,
-    smoothTarget.z + Math.cos(state.yaw) * horizontal,
-  );
+  sun.position.set(position.x, position.y, position.z).addScaledVector(sunDirection, 28);
+  sun.target.position.set(position.x, position.y, position.z);
+  sun.target.updateMatrixWorld();
+
+  if (state.mode.startsWith('race')) {
+    cameraTarget.set(position.x, position.y + 1.35, position.z - 3.6);
+    smoothTarget.lerp(cameraTarget, 1 - Math.exp(-dt * 15));
+    desiredCamera.set(smoothTarget.x, smoothTarget.y + 2.65, smoothTarget.z + 8.7);
+  } else {
+    // Aim above the ball so it lives in the lower third and tall architecture remains visible.
+    cameraTarget.set(position.x, position.y + 2.1, position.z);
+    smoothTarget.lerp(cameraTarget, 1 - Math.exp(-dt * 11));
+    const distance = 11.5;
+    const horizontal = Math.cos(state.pitch) * distance;
+    desiredCamera.set(
+      smoothTarget.x + Math.sin(state.yaw) * horizontal,
+      smoothTarget.y + Math.sin(state.pitch) * distance + 0.35,
+      smoothTarget.z + Math.cos(state.yaw) * horizontal,
+    );
+  }
 
   cameraDirection.copy(desiredCamera).sub(smoothTarget);
   const desiredDistance = cameraDirection.length();
@@ -897,6 +1500,13 @@ function updateVisuals(dt) {
 
   camera.position.lerp(desiredCamera, 1 - Math.exp(-dt * 10));
   camera.lookAt(smoothTarget);
+
+  if (windGain && windFilter) {
+    const speed = Math.hypot(playerBody.linvel().x, playerBody.linvel().z);
+    const active = state.mode === 'race-active';
+    windGain.gain.setTargetAtTime(active ? THREE.MathUtils.clamp(speed / 31, 0.03, 0.22) : 0, audioContext.currentTime, 0.08);
+    windFilter.frequency.setTargetAtTime(380 + speed * 38, audioContext.currentTime, 0.1);
+  }
 }
 
 const gradeShader = {
@@ -986,8 +1596,8 @@ window.render_game_to_text = () => {
   const p = playerBody.translation();
   const v = playerBody.linvel();
   return JSON.stringify({
-    coordinateSystem: 'Y up; camera-relative movement; negative Z leads toward the main gold arch',
-    mode: state.started ? 'playing' : 'intro',
+    coordinateSystem: 'Y up; Free Mode uses camera-relative movement; Race Mode runs downhill along negative Z at world X 80',
+    mode: state.mode,
     lastKey: state.lastKey,
     player: {
       position: { x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2) },
@@ -1005,8 +1615,30 @@ window.render_game_to_text = () => {
       position: { x: +camera.position.x.toFixed(2), y: +camera.position.y.toFixed(2), z: +camera.position.z.toFixed(2) },
       target: { x: +smoothTarget.x.toFixed(2), y: +smoothTarget.y.toFixed(2), z: +smoothTarget.z.toFixed(2) },
     },
+    race: {
+      course: 'Sunset Velocity',
+      elapsed: +race.elapsed.toFixed(3),
+      formattedTime: formatTime(Math.max(race.elapsed, 0.0001)),
+      countdown: +Math.max(0, race.countdown).toFixed(2),
+      coins: race.coins,
+      totalCoins: raceCoins.length,
+      remainingCoins: raceCoins.filter((coin) => !coin.collected).length,
+      shield: race.shield,
+      checkpoint: race.checkpointIndex,
+      checkpointCount: RACE_CHECKPOINT_Z.length,
+      progress: +raceProgressAt(p.z).toFixed(3),
+      bestTime: +race.bestTime.toFixed(3),
+      bestCoins: race.bestCoins,
+      obstacleCount: raceObstacles.length,
+      powerupCount: raceShields.length,
+      shieldPickups: race.shieldPickups,
+      shieldPops: race.shieldPops,
+      coinCrashes: race.coinCrashes,
+    },
     performance: { fps: state.fps, mobileMode: isMobileDevice, pixelRatio: qualityRatio, antialiasSamples: isMobileDevice ? 0 : 4, shadowMap: isMobileDevice ? 1024 : 2048, reflectionMap: isMobileDevice ? 384 : 768, postProcessing: !isMobileDevice, gtaoEnabled: gtao.enabled, gtaoSamples: gtao.enabled ? gtaoSamples : 0 },
-    controls: isMobileDevice ? 'automatic forward roll, one-finger horizontal slide steering, upward swipe jump with repeatable air jumps, automatic camera, Reset button' : 'WASD/arrows roll, Space jump, drag look, R reset, F fullscreen',
+    controls: state.mode.startsWith('race')
+      ? 'automatic high-speed forward roll, drag horizontally to steer, tap or Space to jump including in air, fixed chase camera, R reset to last checkpoint'
+      : (isMobileDevice ? 'automatic forward roll, one-finger horizontal slide steering, tap or upward swipe jump with repeatable air jumps, automatic camera, Reset button' : 'WASD/arrows roll, Space jump, drag look, R reset, F fullscreen'),
     pools: [
       { shape: 'rectangle', x: RECT_POOL.x, z: RECT_POOL.z, waterY: RECT_POOL.waterY },
       { shape: 'round', x: ROUND_POOL.x, z: ROUND_POOL.z, waterY: ROUND_POOL.waterY },
@@ -1016,7 +1648,9 @@ window.render_game_to_text = () => {
       return { name, species, x, z, blocks: count, currentBaseY: +baseBlock.body.translation().y.toFixed(2) };
     }),
     environment: { playerMaterial: 'rigid texture-free procedural PBR marble', sky: 'procedural Preetham', sunElevation: skySettings.elevation, water: 'planar reflective', waves: 'three small geometric wave bands, max amplitude 0.046' },
-    landmarks: ['gold arch at (0, -5)', 'rose/coral stairs near (-7, -5)', 'coral arch at (7, -12)'],
+    landmarks: state.mode.startsWith('race')
+      ? ['start gate at (80, 24)', 'checkpoints at z -7, -40, -73', 'finish line at (80, -104)', 'banked half-pipe spans x 74.6 to 85.4']
+      : ['gold arch at (0, -5)', 'rose/coral stairs near (-7, -5)', 'coral arch at (7, -12)'],
   });
 };
 
