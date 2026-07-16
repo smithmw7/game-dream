@@ -188,9 +188,9 @@ h2 {
   align-items: center;
   gap: 10px;
   padding: 11px 13px;
-  border: 1px solid rgba(255, 250, 240, .28);
+  border: 1px solid rgba(71, 237, 238, .42);
   border-radius: 14px;
-  background: rgba(35, 74, 79, .28);
+  background: rgba(4, 19, 29, .78);
   backdrop-filter: blur(12px);
   box-shadow: 0 10px 35px rgba(29, 63, 69, .12);
 }
@@ -202,8 +202,8 @@ h2 {
 .hud-shield { display: flex; align-items: center; gap: 6px; opacity: .3; font: 500 8px/1 DM Mono, monospace; letter-spacing: .08em; transition: opacity .2s, color .2s; }
 .hud-shield.is-active { color: #aaf7ff; opacity: 1; }
 .shield-dot { width: 9px; height: 9px; border: 1px solid currentColor; border-radius: 50%; box-shadow: 0 0 12px currentColor; }
-.speed-track { position: absolute; left: 10px; right: 10px; bottom: -5px; height: 2px; background: rgba(255, 250, 240, .12); overflow: hidden; }
-.speed-track i { display: block; width: 0; height: 100%; background: linear-gradient(90deg, #fff0b4, #ff8d78); box-shadow: 0 0 8px #ffad83; transition: width .12s linear; }
+.speed-track { position: absolute; left: 10px; right: 10px; bottom: -5px; height: 3px; background: rgba(255, 250, 240, .12); overflow: hidden; }
+.speed-track i { display: block; width: 0; height: 100%; background: linear-gradient(90deg, #21ecec, #ffb51a, #ff3f79); box-shadow: 0 0 10px #21ecec; transition: width .12s linear; }
 
 .race-toast {
   position: absolute;

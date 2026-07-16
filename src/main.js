@@ -44,7 +44,9 @@ const resetButton = document.querySelector('#reset-button');
 const fpsValue = document.querySelector('#fps-value');
 const touchJoystick = document.querySelector('#touch-joystick');
 const touchStick = document.querySelector('#touch-stick');
-const mobileQuery = new URLSearchParams(location.search).has('mobile');
+const pageQuery = new URLSearchParams(location.search);
+const mobileQuery = pageQuery.has('mobile');
+const debugRaceQuery = pageQuery.has('debug');
 const isMobileDevice = mobileQuery || Boolean(
   navigator.userAgentData?.mobile ||
   matchMedia('(pointer: coarse)').matches ||
@@ -595,8 +597,12 @@ function updateFloatingWoodPhysics(time) {
 const RACE_ORIGIN_X = 80;
 const RACE_START_Z = 26;
 const RACE_LENGTH = 6500;
-const RACE_FINISH_Z = RACE_START_Z - RACE_LENGTH;
 const RACE_HALF_WIDTH = 6.2;
+const TRACK_STEP = isMobileDevice ? 6 : 4;
+const TRACK_LOOPS = [
+  { start: 2200, length: 176, radius: 28, name: 'Sun Loop' },
+  { start: 4920, length: 208, radius: 33, name: 'Neon Loop' },
+];
 const COURSE_SECTIONS = [
   { name: 'Sky Launch', start: 0, end: 350, speed: 34, coinSpacing: 15, hazardSpacing: 170, pattern: 'warmup', intensity: 1 },
   { name: 'Ribbon Run', start: 350, end: 850, speed: 39, coinSpacing: 14, hazardSpacing: 92, pattern: 'ribbon', intensity: 2 },
@@ -612,74 +618,151 @@ const COURSE_SECTIONS = [
   { name: 'Final Circuit', start: 5650, end: 6200, speed: 52, coinSpacing: 12, hazardSpacing: 58, pattern: 'circuit', intensity: 5 },
   { name: 'Home Stretch', start: 6200, end: 6500, speed: 60, coinSpacing: 11, hazardSpacing: 74, pattern: 'finale', intensity: 4 },
 ];
-const RACE_CHECKPOINT_Z = COURSE_SECTIONS.slice(0, -1).map((section) => RACE_START_Z - section.end);
+const RACE_CHECKPOINT_DISTANCES = COURSE_SECTIONS.slice(0, -1).map((section) => section.end);
 const raceGroup = new THREE.Group();
 raceGroup.visible = false;
 scene.add(raceGroup);
 
-function raceDistanceAt(z) {
-  return THREE.MathUtils.clamp(RACE_START_Z - z, 0, RACE_LENGTH);
-}
-
-function raceProgressAt(z) {
-  return raceDistanceAt(z) / RACE_LENGTH;
-}
-
-function raceSectionAt(z) {
-  const distance = raceDistanceAt(z);
+function raceSectionAtDistance(distance) {
   return COURSE_SECTIONS.find((section) => distance < section.end) || COURSE_SECTIONS[COURSE_SECTIONS.length - 1];
 }
 
-function raceCenterX(z) {
-  const progress = raceProgressAt(z);
-  return RACE_ORIGIN_X + Math.sin(progress * Math.PI * 4) * 10 + Math.sin(progress * Math.PI * 11 + 0.6) * 4;
+function trackTurnAt(distance) {
+  const section = raceSectionAtDistance(distance);
+  const broad = Math.sin(distance / 310) * 0.48 + Math.sin(distance / 118 + 0.7) * 0.18;
+  if (section.pattern === 'chicane') return broad + Math.sin((distance - section.start) / 48) * 0.34;
+  if (section.pattern === 'circuit') return broad + Math.sin((distance - section.start) / 72) * 0.28;
+  if (section.pattern === 'banks') return broad + Math.sin((distance - section.start) / 105) * 0.22;
+  return broad;
 }
 
-function raceForwardAt(z, target = new THREE.Vector3()) {
-  const sample = 2;
-  return target.set(raceCenterX(z - sample) - raceCenterX(z), 0, -sample).normalize();
+function trackSlopeAt(distance) {
+  const section = raceSectionAtDistance(distance);
+  const base = -0.178 + Math.sin(distance / 173) * 0.035;
+  if (section.pattern === 'rollers') return base + Math.sin((distance - section.start) / 23) * 0.28;
+  if (section.pattern === 'dive') return -0.27 + Math.sin((distance - section.start) / 61) * 0.055;
+  if (section.pattern === 'breather') return -0.09 + Math.sin(distance / 80) * 0.025;
+  return base;
 }
 
-function raceCenterHeight(z) {
-  const progress = raceProgressAt(z);
-  const macroRollers = Math.sin(progress * Math.PI * 26) * 2.25;
-  const fineRollers = Math.sin(progress * Math.PI * 58 + 0.8) * 0.72;
-  return 720 - progress * 1120 + macroRollers + fineRollers;
+function createRaceTrackSamples() {
+  const samples = [];
+  const cursor = new THREE.Vector3(RACE_ORIGIN_X, 720, RACE_START_Z);
+  const worldUp = new THREE.Vector3(0, 1, 0);
+  const loopStates = new Map();
+  const sampleCount = Math.ceil(RACE_LENGTH / TRACK_STEP);
+
+  for (let index = 0; index <= sampleCount; index++) {
+    const distance = Math.min(RACE_LENGTH, index * TRACK_STEP);
+    const loop = TRACK_LOOPS.find((entry) => distance >= entry.start && distance <= entry.start + entry.length);
+    let center;
+    let tangent;
+    let right;
+    let up;
+    let bank = 0;
+
+    if (loop) {
+      if (!loopStates.has(loop.start)) {
+        const yaw = trackTurnAt(loop.start);
+        const loopForward = new THREE.Vector3(Math.sin(yaw), 0, -Math.cos(yaw)).normalize();
+        loopStates.set(loop.start, { start: cursor.clone(), forward: loopForward });
+      }
+      const loopState = loopStates.get(loop.start);
+      const t = THREE.MathUtils.clamp((distance - loop.start) / loop.length, 0, 1);
+      const angle = -Math.PI / 2 + t * Math.PI * 2;
+      center = loopState.start.clone()
+        .addScaledVector(worldUp, loop.radius + Math.sin(angle) * loop.radius)
+        .addScaledVector(loopState.forward, Math.cos(angle) * loop.radius);
+      tangent = worldUp.clone().multiplyScalar(Math.cos(angle))
+        .addScaledVector(loopState.forward, -Math.sin(angle)).normalize();
+      right = new THREE.Vector3().crossVectors(tangent, worldUp);
+      if (right.lengthSq() < 0.001) right.set(Math.cos(trackTurnAt(loop.start)), 0, Math.sin(trackTurnAt(loop.start)));
+      right.normalize();
+      up = new THREE.Vector3().crossVectors(right, tangent).normalize();
+      if (t >= 0.999) cursor.copy(loopState.start);
+    } else {
+      const yaw = trackTurnAt(distance);
+      tangent = new THREE.Vector3(Math.sin(yaw), trackSlopeAt(distance), -Math.cos(yaw)).normalize();
+      right = new THREE.Vector3(Math.cos(yaw), 0, Math.sin(yaw)).normalize();
+      up = new THREE.Vector3().crossVectors(right, tangent).normalize();
+      const section = raceSectionAtDistance(distance);
+      bank = -Math.sin(distance / 104) * (0.08 + section.intensity * 0.035);
+      right.applyAxisAngle(tangent, bank).normalize();
+      up.crossVectors(right, tangent).normalize();
+      center = cursor.clone();
+    }
+
+    samples.push({ distance, center, tangent, right, up, bank, loop: loop?.name || null });
+
+    const nextDistance = Math.min(RACE_LENGTH, distance + TRACK_STEP);
+    const inLoop = TRACK_LOOPS.some((entry) => nextDistance > entry.start && nextDistance <= entry.start + entry.length);
+    if (!inLoop && nextDistance > distance) {
+      cursor.addScaledVector(tangent, nextDistance - distance);
+    }
+  }
+  return samples;
 }
 
-function raceSurfaceHeight(worldX, z) {
-  const progress = raceProgressAt(z);
-  const section = raceSectionAt(z);
-  const localX = worldX - raceCenterX(z);
-  const normalizedX = localX / RACE_HALF_WIDTH;
-  const troughDepth = 4.3 + section.intensity * 0.2 + Math.sin(progress * Math.PI * 18) * 0.42;
-  const trough = normalizedX * normalizedX * troughDepth;
-  const bank = Math.sin(progress * Math.PI * 17.5 + section.intensity) * localX * (0.1 + section.intensity * 0.025);
-  const ripple = Math.sin(progress * Math.PI * 92) * 0.22 * (1 - Math.min(1, Math.abs(normalizedX)));
-  return raceCenterHeight(z) + trough + bank + ripple;
+const raceTrackSamples = createRaceTrackSamples();
+const raceBasisForward = new THREE.Vector3();
+const raceFrame = {
+  center: new THREE.Vector3(), tangent: new THREE.Vector3(), right: new THREE.Vector3(), up: new THREE.Vector3(),
+  bank: 0, loop: null,
+};
+
+function makeRaceBasis(frame, target = new THREE.Matrix4()) {
+  // A Three.js rotation matrix must be right-handed. The authored travel tangent
+  // points down-course, so local +Z points backward while local -Z points forward.
+  return target.makeBasis(frame.right, frame.up, raceBasisForward.copy(frame.tangent).negate());
+}
+
+function getRaceFrame(distance, target = raceFrame) {
+  const clamped = THREE.MathUtils.clamp(distance, 0, RACE_LENGTH);
+  const scaled = clamped / TRACK_STEP;
+  const index = Math.min(raceTrackSamples.length - 2, Math.floor(scaled));
+  const alpha = THREE.MathUtils.clamp(scaled - index, 0, 1);
+  const a = raceTrackSamples[index];
+  const b = raceTrackSamples[index + 1] || a;
+  target.center.copy(a.center).lerp(b.center, alpha);
+  target.tangent.copy(a.tangent).lerp(b.tangent, alpha).normalize();
+  target.right.copy(a.right).lerp(b.right, alpha).normalize();
+  target.up.copy(a.up).lerp(b.up, alpha).normalize();
+  target.bank = THREE.MathUtils.lerp(a.bank, b.bank, alpha);
+  target.loop = alpha < 0.5 ? a.loop : b.loop;
+  return target;
+}
+
+function trackRiseAt(lateral) {
+  const normalized = THREE.MathUtils.clamp(lateral / RACE_HALF_WIDTH, -1, 1);
+  return normalized * normalized * 3.45;
+}
+
+function racePointAt(distance, lateral = 0, lift = 0, target = new THREE.Vector3()) {
+  const frame = getRaceFrame(distance);
+  return target.copy(frame.center)
+    .addScaledVector(frame.right, lateral)
+    .addScaledVector(frame.up, trackRiseAt(lateral) + lift);
 }
 
 function createRaceTrackGeometry() {
-  // The surface functions are deliberately low-frequency; 8-12 unit longitudinal
-  // spans stay visually smooth while keeping the 6.5 km collider affordable.
-  const xSegments = isMobileDevice ? 16 : 24;
-  const zSegments = isMobileDevice ? 560 : 800;
+  const xSegments = isMobileDevice ? 10 : 14;
   const positions = [];
   const uvs = [];
   const indices = [];
-  for (let zi = 0; zi <= zSegments; zi++) {
-    const zT = zi / zSegments;
-    const z = THREE.MathUtils.lerp(RACE_START_Z + 8, RACE_FINISH_Z - 24, zT);
-    const centerX = raceCenterX(z);
+  for (let zi = 0; zi < raceTrackSamples.length; zi++) {
+    const frame = raceTrackSamples[zi];
     for (let xi = 0; xi <= xSegments; xi++) {
       const xT = xi / xSegments;
-      const worldX = centerX + THREE.MathUtils.lerp(-RACE_HALF_WIDTH, RACE_HALF_WIDTH, xT);
-      positions.push(worldX, raceSurfaceHeight(worldX, z), z);
-      uvs.push(xT, raceDistanceAt(z) / 18);
+      const lateral = THREE.MathUtils.lerp(-RACE_HALF_WIDTH, RACE_HALF_WIDTH, xT);
+      const point = frame.center.clone()
+        .addScaledVector(frame.right, lateral)
+        .addScaledVector(frame.up, trackRiseAt(lateral));
+      positions.push(point.x, point.y, point.z);
+      uvs.push(xT, frame.distance / 12);
     }
   }
   const row = xSegments + 1;
-  for (let zi = 0; zi < zSegments; zi++) {
+  for (let zi = 0; zi < raceTrackSamples.length - 1; zi++) {
     for (let xi = 0; xi < xSegments; xi++) {
       const a = zi * row + xi;
       const b = a + 1;
@@ -698,12 +781,12 @@ function createRaceTrackGeometry() {
 
 const raceTrackGeometry = createRaceTrackGeometry();
 const raceTrackMaterial = new THREE.MeshPhysicalMaterial({
-  color: '#db765f',
-  roughness: 0.56,
+  color: '#112a3c',
+  roughness: 0.48,
   metalness: 0,
-  clearcoat: 0.36,
-  clearcoatRoughness: 0.3,
-  envMapIntensity: 0.7,
+  clearcoat: 0.24,
+  clearcoatRoughness: 0.38,
+  envMapIntensity: 0.82,
   side: THREE.DoubleSide,
 });
 raceTrackMaterial.onBeforeCompile = (shader) => {
@@ -715,68 +798,111 @@ raceTrackMaterial.onBeforeCompile = (shader) => {
     .replace(
     '#include <color_fragment>',
     `#include <color_fragment>
-      float courseProgress = clamp(vRaceUv.y / ${(RACE_LENGTH / 18).toFixed(5)}, 0.0, 1.0);
-      vec3 highColor = vec3(0.84, 0.42, 0.38);
-      vec3 middleColor = vec3(0.62, 0.35, 0.58);
-      vec3 lowColor = vec3(0.88, 0.56, 0.25);
-      vec3 courseColor = mix(highColor, middleColor, smoothstep(0.18, 0.54, courseProgress));
-      courseColor = mix(courseColor, lowColor, smoothstep(0.68, 0.96, courseProgress));
-      diffuseColor.rgb = mix(diffuseColor.rgb, courseColor, 0.46);
-      float raceStripe = 1.0 - smoothstep(0.02, 0.06, abs(vRaceUv.x - 0.5));
-      float raceBands = smoothstep(0.48, 0.5, sin(vRaceUv.y * 3.14159) * 0.5 + 0.5) * 0.09;
-      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 0.72, 0.38), raceStripe * 0.7);
-      diffuseColor.rgb += raceBands;
+      float courseProgress = clamp(vRaceUv.y / ${(RACE_LENGTH / 12).toFixed(5)}, 0.0, 1.0);
+      float edge = smoothstep(0.34, 0.48, abs(vRaceUv.x - 0.5));
+      float centerStripe = 1.0 - smoothstep(0.018, 0.038, abs(vRaceUv.x - 0.5));
+      float dash = smoothstep(0.28, 0.42, sin(vRaceUv.y * 3.14159) * 0.5 + 0.5);
+      vec2 gritCell = floor(vRaceUv * vec2(92.0, 2.6));
+      float grit = fract(sin(dot(gritCell, vec2(12.9898, 78.233))) * 43758.5453);
+      vec3 navy = mix(vec3(0.025, 0.075, 0.12), vec3(0.055, 0.15, 0.20), courseProgress);
+      vec3 cyanEdge = vec3(0.04, 0.82, 0.92);
+      diffuseColor.rgb = navy + (grit - 0.5) * 0.018;
+      diffuseColor.rgb = mix(diffuseColor.rgb, cyanEdge, edge * 0.26);
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 0.64, 0.16), centerStripe * dash * 0.95);
     `,
   );
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <roughnessmap_fragment>',
+    '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor + (grit - 0.5) * 0.11, 0.32, 0.7);',
+  );
 };
-raceTrackMaterial.customProgramCacheKey = () => 'game-dream-race-track-v1';
+raceTrackMaterial.customProgramCacheKey = () => 'game-dream-race-track-v3';
 const raceTrack = new THREE.Mesh(raceTrackGeometry, raceTrackMaterial);
 raceTrack.receiveShadow = true;
 raceGroup.add(raceTrack);
 
-const raceTrackBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-world.createCollider(
-  RAPIER.ColliderDesc.trimesh(
-    new Float32Array(raceTrackGeometry.attributes.position.array),
-    new Uint32Array(raceTrackGeometry.index.array),
-  ).setFriction(1.55),
-  raceTrackBody,
-);
+const railMaterial = new THREE.MeshPhysicalMaterial({
+  color: '#2bf1ef', emissive: '#087f91', emissiveIntensity: 1.15,
+  roughness: 0.22, clearcoat: 0.85, clearcoatRoughness: 0.12,
+  side: THREE.DoubleSide,
+});
 
-const raceGateMaterial = new THREE.MeshPhysicalMaterial({ color: '#ffdc85', roughness: 0.28, clearcoat: 0.7, clearcoatRoughness: 0.16, envMapIntensity: 1.15 });
-const finishDarkMaterial = new THREE.MeshStandardMaterial({ color: '#443448', roughness: 0.48 });
+function createTrackEdgeGeometry() {
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+  for (const side of [-1, 1]) {
+    const vertexOffset = positions.length / 3;
+    for (const frame of raceTrackSamples) {
+      for (const inset of [0.28, 0]) {
+        const lateral = side * (RACE_HALF_WIDTH - inset);
+        const point = frame.center.clone()
+          .addScaledVector(frame.right, lateral)
+          .addScaledVector(frame.up, trackRiseAt(lateral) + 0.055);
+        positions.push(point.x, point.y, point.z);
+        uvs.push(inset ? 0 : 1, frame.distance / 20);
+      }
+    }
+    for (let index = 0; index < raceTrackSamples.length - 1; index++) {
+      const a = vertexOffset + index * 2;
+      const b = a + 1;
+      const c = a + 2;
+      const d = a + 3;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+const raceRails = new THREE.Mesh(createTrackEdgeGeometry(), railMaterial);
+raceRails.frustumCulled = false;
+raceGroup.add(raceRails);
+
+const raceGateMaterial = new THREE.MeshPhysicalMaterial({ color: '#ffb31a', emissive: '#9b4500', emissiveIntensity: 0.45, roughness: 0.24, clearcoat: 0.78, clearcoatRoughness: 0.14, envMapIntensity: 1.25 });
+const finishDarkMaterial = new THREE.MeshStandardMaterial({ color: '#071721', roughness: 0.42 });
 const finishLightMaterial = new THREE.MeshStandardMaterial({ color: '#fff1d4', roughness: 0.42 });
 
-function addRaceGate(z, finish = false) {
+function orientRaceObject(object, distance) {
+  const frame = getRaceFrame(distance);
+  const basis = makeRaceBasis(frame);
+  object.quaternion.setFromRotationMatrix(basis);
+  object.position.copy(frame.center);
+  return object;
+}
+
+function addRaceGate(distance, finish = false) {
   const group = new THREE.Group();
-  const centerX = raceCenterX(z);
   const postHeight = 3.0;
   for (const side of [-1, 1]) {
-    const x = centerX + side * (RACE_HALF_WIDTH - 0.2);
     const post = new THREE.Mesh(new RoundedBoxGeometry(0.26, postHeight, 0.34, 3, 0.06), finish ? finishDarkMaterial : raceGateMaterial);
-    post.position.set(x, raceSurfaceHeight(x, z) + postHeight / 2, z);
+    post.position.set(side * (RACE_HALF_WIDTH - 0.2), trackRiseAt(RACE_HALF_WIDTH) + postHeight / 2, 0);
     post.castShadow = true;
     group.add(post);
   }
-  const beamY = raceCenterHeight(z) + 6.35;
   const beam = new THREE.Mesh(new RoundedBoxGeometry(RACE_HALF_WIDTH * 2, 0.34, 0.42, 3, 0.07), finish ? finishLightMaterial : raceGateMaterial);
-  beam.position.set(centerX, beamY, z);
+  beam.position.set(0, 6.85, 0);
   beam.castShadow = true;
   group.add(beam);
   if (finish) {
     for (let i = 0; i < 12; i++) {
       const tile = new THREE.Mesh(new THREE.BoxGeometry(0.74, 0.17, 0.44), i % 2 ? finishDarkMaterial : finishLightMaterial);
-      tile.position.set(centerX - 4.05 + i * 0.74, beamY, z - 0.02);
+      tile.position.set(-4.05 + i * 0.74, 6.85, -0.02);
       group.add(tile);
     }
   }
+  orientRaceObject(group, distance);
   raceGroup.add(group);
   return group;
 }
 
-addRaceGate(RACE_START_Z - 2);
-RACE_CHECKPOINT_Z.forEach((z) => addRaceGate(z));
-addRaceGate(RACE_FINISH_Z, true);
+addRaceGate(2);
+RACE_CHECKPOINT_DISTANCES.forEach((distance) => addRaceGate(distance));
+addRaceGate(RACE_LENGTH - 2, true);
 
 const raceCoins = [];
 const coinGeometry = new THREE.TorusGeometry(0.32, 0.105, 10, 24);
@@ -810,13 +936,12 @@ function coinLiftFor(section, index) {
 }
 
 function addRaceCoin(localX, distance, lift = 0.92) {
-  const z = RACE_START_Z - distance;
-  const x = raceCenterX(z) + localX;
   raceCoins.push({
-    position: new THREE.Vector3(x, raceSurfaceHeight(x, z) + lift, z),
+    position: racePointAt(distance, localX, lift, new THREE.Vector3()),
     collected: false,
     localX,
-    z,
+    distance,
+    lift,
     phase: raceCoins.length * 0.37,
   });
 }
@@ -843,7 +968,11 @@ raceCoinMesh.frustumCulled = false;
 raceGroup.add(raceCoinMesh);
 
 function setRaceCoinInstance(coin, index, spin = 0) {
-  raceObjectQuaternion.setFromEuler(new THREE.Euler(Math.sin(spin + coin.phase) * 0.12, spin + coin.phase, 0));
+  const frame = getRaceFrame(coin.distance);
+  const basis = makeRaceBasis(frame);
+  raceObjectQuaternion.setFromRotationMatrix(basis);
+  const spinQuaternion = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), spin + coin.phase);
+  raceObjectQuaternion.multiply(spinQuaternion);
   raceObjectScale.setScalar(coin.collected ? 0 : 1);
   raceObjectMatrix.compose(coin.position, raceObjectQuaternion, raceObjectScale);
   raceCoinMesh.setMatrixAt(index, raceObjectMatrix);
@@ -852,7 +981,7 @@ function setRaceCoinInstance(coin, index, spin = 0) {
 raceCoins.forEach((coin, index) => setRaceCoinInstance(coin, index));
 raceCoinMesh.instanceMatrix.needsUpdate = true;
 
-const obstacleMaterial = new THREE.MeshPhysicalMaterial({ color: '#a8324f', emissive: '#5e102c', emissiveIntensity: 0.28, roughness: 0.38, clearcoat: 0.58, clearcoatRoughness: 0.2 });
+const obstacleMaterial = new THREE.MeshPhysicalMaterial({ color: '#f12b6b', emissive: '#7c092f', emissiveIntensity: 0.72, roughness: 0.3, clearcoat: 0.72, clearcoatRoughness: 0.16 });
 const raceObstacles = [];
 
 function obstacleLaneFor(section, index) {
@@ -869,13 +998,11 @@ for (const section of COURSE_SECTIONS) {
   let index = 0;
   const firstHazard = section.start + (section.pattern === 'warmup' ? 235 : 64);
   for (let distance = firstHazard; distance < section.end - 34; distance += section.hazardSpacing) {
-    const z = RACE_START_Z - distance;
     const localX = obstacleLaneFor(section, index);
-    const x = raceCenterX(z) + localX;
     const wide = (index + section.intensity) % 5 === 0;
     raceObstacles.push({
-      position: new THREE.Vector3(x, raceSurfaceHeight(x, z) + 0.72, z),
-      z,
+      position: racePointAt(distance, localX, 0.72, new THREE.Vector3()),
+      distance,
       localX,
       halfX: wide ? 1.18 : 0.82,
       scaleX: wide ? 1.42 : 1,
@@ -891,7 +1018,8 @@ raceObstacleMesh.castShadow = true;
 raceObstacleMesh.receiveShadow = true;
 raceObstacleMesh.frustumCulled = false;
 raceObstacles.forEach((obstacle, index) => {
-  raceObjectQuaternion.setFromEuler(new THREE.Euler(0, Math.sin(obstacle.phase) * 0.08, 0));
+  const frame = getRaceFrame(obstacle.distance);
+  raceObjectQuaternion.setFromRotationMatrix(makeRaceBasis(frame));
   raceObjectScale.set(obstacle.scaleX, 1, 1);
   raceObjectMatrix.compose(obstacle.position, raceObjectQuaternion, raceObjectScale);
   raceObstacleMesh.setMatrixAt(index, raceObjectMatrix);
@@ -905,24 +1033,24 @@ for (const shield of [
   { x: 3.4, distance: 1080 }, { x: -3.4, distance: 2025 }, { x: 0, distance: 3160 },
   { x: -3.2, distance: 4015 }, { x: 3.2, distance: 4775 }, { x: 0, distance: 5750 },
 ]) {
-  const z = RACE_START_Z - shield.distance;
-  const x = raceCenterX(z) + shield.x;
   const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.58, 2), shieldMaterial);
-  mesh.position.set(x, raceSurfaceHeight(x, z) + 1.05, z);
+  mesh.position.copy(racePointAt(shield.distance, shield.x, 1.05, new THREE.Vector3()));
+  orientRaceObject(mesh, shield.distance);
+  mesh.position.copy(racePointAt(shield.distance, shield.x, 1.05, new THREE.Vector3()));
   mesh.castShadow = true;
   raceGroup.add(mesh);
-  raceShields.push({ ...shield, z, baseY: mesh.position.y, mesh, collected: false });
+  raceShields.push({ ...shield, basePosition: mesh.position.clone(), mesh, collected: false });
 }
 
 // Paired hoops announce each pacing beat before its mechanics arrive.
-const hoopMaterial = new THREE.MeshStandardMaterial({ color: '#e9a0b9', roughness: 0.5, envMapIntensity: 0.7 });
+const hoopMaterial = new THREE.MeshStandardMaterial({ color: '#ff8d28', emissive: '#7c2900', emissiveIntensity: 0.42, roughness: 0.38, envMapIntensity: 0.8 });
 const hoopGeometry = new THREE.TorusGeometry(RACE_HALF_WIDTH + 0.55, 0.16, 10, 48, Math.PI);
 for (const section of COURSE_SECTIONS) {
   const distances = [section.start + 18, (section.start + section.end) / 2];
   for (const distance of distances) {
-    const z = RACE_START_Z - distance;
     const hoop = new THREE.Mesh(hoopGeometry, hoopMaterial);
-    hoop.position.set(raceCenterX(z), raceCenterHeight(z) + 1.05, z);
+    orientRaceObject(hoop, distance);
+    hoop.position.copy(racePointAt(distance, 0, 1.05, new THREE.Vector3()));
     hoop.castShadow = true;
     raceGroup.add(hoop);
   }
@@ -936,13 +1064,15 @@ const cloudMaterial = new THREE.MeshPhysicalMaterial({
 });
 const cloudPuffs = [];
 for (let distance = 90, index = 0; distance < 3350; distance += 48, index++) {
-  const z = RACE_START_Z - distance;
   for (const side of [-1, 1]) {
     const spread = 16 + (index % 5) * 5;
-    const x = raceCenterX(z) + side * spread;
-    const y = raceCenterHeight(z) + 5 + (index % 4) * 5;
+    const frame = getRaceFrame(distance);
+    const position = frame.center.clone()
+      .addScaledVector(frame.right, side * spread)
+      .addScaledVector(frame.up, 5 + (index % 4) * 5)
+      .addScaledVector(frame.tangent, side > 0 ? 11 : -9);
     cloudPuffs.push({
-      position: new THREE.Vector3(x, y, z + (side > 0 ? 11 : -9)),
+      position,
       scale: new THREE.Vector3(7 + index % 4 * 2.1, 5 + index % 3 * 1.35, 8 + index % 5 * 1.6),
     });
   }
@@ -1071,7 +1201,7 @@ const race = {
   coins: 0,
   shield: false,
   checkpointIndex: 0,
-  lastCheckpointZ: RACE_START_Z - 4,
+  lastCheckpointDistance: 4,
   hitCooldown: 0,
   toastTimer: 0,
   bestTime: readRecord('game-dream-long-course-best-time'),
@@ -1079,6 +1209,17 @@ const race = {
   shieldPickups: 0,
   shieldPops: 0,
   coinCrashes: 0,
+};
+
+const raceMotor = {
+  distance: 4,
+  speed: 0,
+  lateral: 0,
+  lateralVelocity: 0,
+  jumpHeight: 0,
+  jumpVelocity: 0,
+  grounded: true,
+  roll: 0,
 };
 
 function formatTime(seconds) {
@@ -1111,6 +1252,15 @@ function showToast(message, duration = 1.25) {
   raceToast.textContent = message;
   raceToast.classList.add('is-visible');
   race.toastTimer = duration;
+}
+
+function applyModeLook(racing) {
+  renderer.toneMappingExposure = racing ? 0.59 : 0.72;
+  scene.environmentIntensity = racing ? 0.46 : 0.58;
+  scene.fog.color.set(racing ? '#6b9abb' : '#9fc4ca');
+  scene.fog.near = racing ? 86 : 70;
+  scene.fog.far = racing ? 250 : 190;
+  sun.intensity = racing ? 3.15 : 3.8;
 }
 
 let audioContext;
@@ -1166,9 +1316,40 @@ function haptic(pattern) {
   navigator.vibrate?.(pattern);
 }
 
+function setRaceBodyMode(enabled) {
+  const type = enabled ? RAPIER.RigidBodyType.KinematicPositionBased : RAPIER.RigidBodyType.Dynamic;
+  playerBody.setBodyType(type, true);
+  playerBody.setGravityScale(enabled ? 0 : 1, true);
+  playerBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  playerBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+}
+
+function placeRacePlayer(distance = raceMotor.distance, lateral = raceMotor.lateral) {
+  raceMotor.distance = THREE.MathUtils.clamp(distance, 0, RACE_LENGTH);
+  raceMotor.lateral = THREE.MathUtils.clamp(lateral, -RACE_HALF_WIDTH + PLAYER_RADIUS, RACE_HALF_WIDTH - PLAYER_RADIUS);
+  const position = racePointAt(
+    raceMotor.distance,
+    raceMotor.lateral,
+    PLAYER_RADIUS + 0.04 + raceMotor.jumpHeight,
+    new THREE.Vector3(),
+  );
+  playerBody.setTranslation(position, true);
+  playerBody.setNextKinematicTranslation(position);
+}
+
+function snapRaceCamera() {
+  const frame = getRaceFrame(raceMotor.distance);
+  const position = racePointAt(raceMotor.distance, raceMotor.lateral, PLAYER_RADIUS + 0.04 + raceMotor.jumpHeight, new THREE.Vector3());
+  smoothTarget.copy(position).addScaledVector(frame.up, 1.25).addScaledVector(frame.tangent, 6.4);
+  camera.position.copy(position).addScaledVector(frame.tangent, -11.5).addScaledVector(frame.up, 4.4);
+  camera.up.copy(frame.up);
+  raceCameraUp.copy(frame.up);
+  camera.lookAt(smoothTarget);
+}
+
 function teleportPlayer(x, z) {
-  const y = state.mode.startsWith('race') ? raceSurfaceHeight(x, z) + PLAYER_RADIUS + 0.18 : 1.4;
-  playerBody.setTranslation({ x, y, z }, true);
+  setRaceBodyMode(false);
+  playerBody.setTranslation({ x, y: 1.4, z }, true);
   playerBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
   playerBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
   playerBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
@@ -1181,6 +1362,7 @@ function showSplash() {
   raceGroup.visible = false;
   raceHud.classList.add('is-hidden');
   countdown.classList.add('is-hidden');
+  applyModeLook(false);
   setPanel(splash);
 }
 
@@ -1193,7 +1375,9 @@ function startFreeMode() {
   raceGroup.visible = false;
   raceHud.classList.add('is-hidden');
   countdown.classList.add('is-hidden');
+  applyModeLook(false);
   setPanel(null);
+  camera.up.set(0, 1, 0);
   teleportPlayer(0, 5.5);
   canvas.focus();
 }
@@ -1205,10 +1389,13 @@ function showRaceBriefing() {
   raceGroup.visible = true;
   raceHud.classList.add('is-hidden');
   countdown.classList.add('is-hidden');
+  applyModeLook(true);
   refreshRecordUI();
   setPanel(raceBriefing);
-  const startZ = RACE_START_Z - 4;
-  teleportPlayer(raceCenterX(startZ), startZ);
+  setRaceBodyMode(true);
+  Object.assign(raceMotor, { distance: 4, speed: 0, lateral: 0, lateralVelocity: 0, jumpHeight: 0, jumpVelocity: 0, grounded: true, roll: 0 });
+  placeRacePlayer();
+  snapRaceCamera();
 }
 
 function resetRaceObjects() {
@@ -1229,9 +1416,10 @@ function startRace() {
   resetRaceObjects();
   Object.assign(race, {
     elapsed: 0, countdown: 3.25, coins: 0, shield: false,
-    checkpointIndex: 0, lastCheckpointZ: RACE_START_Z - 4,
+    checkpointIndex: 0, lastCheckpointDistance: 4,
     hitCooldown: 0, toastTimer: 0, shieldPickups: 0, shieldPops: 0, coinCrashes: 0,
   });
+  Object.assign(raceMotor, { distance: 4, speed: 0, lateral: 0, lateralVelocity: 0, jumpHeight: 0, jumpVelocity: 0, grounded: true, roll: 0 });
   state.mode = 'race-countdown';
   state.started = true;
   state.yaw = 0;
@@ -1241,7 +1429,9 @@ function startRace() {
   raceHud.classList.remove('is-hidden');
   countdown.classList.remove('is-hidden');
   countdownValue.textContent = '3';
-  teleportPlayer(raceCenterX(race.lastCheckpointZ), race.lastCheckpointZ);
+  setRaceBodyMode(true);
+  placeRacePlayer();
+  snapRaceCamera();
   updateRaceHud();
   playTone(420, 0.08, 'sine', 0.1);
   canvas.focus();
@@ -1251,9 +1441,7 @@ function finishRace() {
   if (state.mode !== 'race-active') return;
   state.mode = 'race-finished';
   state.started = false;
-  playerBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
-  playerBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
-  playerBody.sleep();
+  raceMotor.speed = 0;
   const newBestTime = !race.bestTime || race.elapsed < race.bestTime;
   const newBestCoins = race.coins > race.bestCoins;
   if (newBestTime) race.bestTime = race.elapsed;
@@ -1276,6 +1464,16 @@ function finishRace() {
 
 addEventListener('keydown', (event) => {
   state.lastKey = `${event.code}:${event.key}`;
+  if (debugRaceQuery && state.mode === 'race-active' && ['Digit1', 'Digit2', 'End'].includes(event.code)) {
+    const debugDistance = event.code === 'Digit1' ? TRACK_LOOPS[0].start - 28 : (event.code === 'Digit2' ? TRACK_LOOPS[1].start - 28 : RACE_LENGTH - 25);
+    Object.assign(raceMotor, { distance: debugDistance, speed: raceSectionAtDistance(debugDistance).speed, lateral: 0, lateralVelocity: 0, jumpHeight: 0, jumpVelocity: 0, grounded: true });
+    race.checkpointIndex = RACE_CHECKPOINT_DISTANCES.filter((distance) => distance <= debugDistance).length;
+    race.lastCheckpointDistance = race.checkpointIndex ? RACE_CHECKPOINT_DISTANCES[race.checkpointIndex - 1] + 2.5 : 4;
+    placeRacePlayer();
+    snapRaceCamera();
+    event.preventDefault();
+    return;
+  }
   if (event.code === 'Enter' && state.mode === 'race-briefing') {
     startRace();
     event.preventDefault();
@@ -1394,8 +1592,20 @@ function toggleFullscreen() {
 }
 
 function resetPlayer() {
-  if (state.mode.startsWith('race')) teleportPlayer(raceCenterX(race.lastCheckpointZ), race.lastCheckpointZ);
-  else teleportPlayer(0, 5.5);
+  if (state.mode.startsWith('race')) {
+    Object.assign(raceMotor, {
+      distance: race.lastCheckpointDistance,
+      speed: 22,
+      lateral: 0,
+      lateralVelocity: 0,
+      jumpHeight: 0,
+      jumpVelocity: 0,
+      grounded: true,
+    });
+    setRaceBodyMode(true);
+    placeRacePlayer();
+    snapRaceCamera();
+  } else teleportPlayer(0, 5.5);
 }
 
 function performJump() {
@@ -1410,6 +1620,18 @@ function performJump() {
 
 function performTouchJump() {
   if (state.mode !== 'free' && state.mode !== 'race-active') return;
+  if (state.mode === 'race-active') {
+    const wasAirborne = !raceMotor.grounded;
+    raceMotor.jumpVelocity = 13.8;
+    raceMotor.grounded = false;
+    state.grounded = false;
+    state.jumpCount += 1;
+    if (wasAirborne) state.airJumpCount += 1;
+    state.touchJumpCooldown = 0.12;
+    playTone(wasAirborne ? 360 : 280, 0.1, 'triangle', 0.08);
+    haptic(12);
+    return;
+  }
   const velocity = playerBody.linvel();
   const wasAirborne = !state.grounded;
   playerBody.setLinvel({ x: velocity.x, y: state.mode === 'race-active' ? 11.8 : 11.2, z: velocity.z }, true);
@@ -1441,14 +1663,13 @@ finishFreeButton.addEventListener('click', startFreeMode);
 resetButton.addEventListener('click', resetPlayer);
 
 function updateRaceHud() {
-  const velocity = playerBody.linvel();
-  const section = raceSectionAt(playerBody.translation().z);
+  const section = raceSectionAtDistance(raceMotor.distance);
   hudTime.textContent = formatTime(Math.max(race.elapsed, 0.0001));
   hudCoins.textContent = String(race.coins);
-  hudCheckpoint.textContent = `${race.checkpointIndex} / ${RACE_CHECKPOINT_Z.length}`;
+  hudCheckpoint.textContent = `${race.checkpointIndex} / ${RACE_CHECKPOINT_DISTANCES.length}`;
   hudSection.textContent = section.name.toUpperCase();
   hudShield.classList.toggle('is-active', race.shield);
-  speedFill.style.width = `${THREE.MathUtils.clamp(Math.hypot(velocity.x, velocity.z) / 62, 0, 1) * 100}%`;
+  speedFill.style.width = `${THREE.MathUtils.clamp(raceMotor.speed / 64, 0, 1) * 100}%`;
 }
 
 function collectCoin(coin) {
@@ -1462,13 +1683,11 @@ function collectCoin(coin) {
   haptic(7);
 }
 
-function hitObstacle(position) {
+function hitObstacle() {
   if (race.hitCooldown > 0) return;
   race.hitCooldown = 0.85;
-  const velocity = playerBody.linvel();
-  const hitForward = raceForwardAt(position.z, new THREE.Vector3());
-  const slowedSpeed = Math.max(12, Math.hypot(velocity.x, velocity.z) * 0.38);
-  playerBody.setLinvel({ x: hitForward.x * slowedSpeed, y: 5.8, z: hitForward.z * slowedSpeed }, true);
+  raceMotor.speed = Math.max(16, raceMotor.speed * 0.42);
+  raceMotor.lateralVelocity *= -0.18;
   if (race.shield) {
     race.shield = false;
     race.shieldPops += 1;
@@ -1485,20 +1704,16 @@ function hitObstacle(position) {
   }
 }
 
-function updateRaceGameplay(dt, position) {
+function updateRaceGameplay(dt) {
   race.hitCooldown = Math.max(0, race.hitCooldown - dt);
   for (const coin of raceCoins) {
-    if (coin.collected || Math.abs(position.z - coin.z) > 1.4) continue;
-    const dx = position.x - coin.position.x;
-    const dy = position.y - coin.position.y;
-    const dz = position.z - coin.position.z;
-    if (!coin.collected && dx * dx + dy * dy + dz * dz < 1.5) collectCoin(coin);
+    if (coin.collected || Math.abs(raceMotor.distance - coin.distance) > 1.35) continue;
+    const lateralDistance = Math.abs(raceMotor.lateral - coin.localX);
+    const verticalDistance = Math.abs(PLAYER_RADIUS + raceMotor.jumpHeight - coin.lift);
+    if (lateralDistance < 0.86 && verticalDistance < 0.9) collectCoin(coin);
   }
   for (const shield of raceShields) {
-    const dx = position.x - shield.mesh.position.x;
-    const dy = position.y - shield.mesh.position.y;
-    const dz = position.z - shield.mesh.position.z;
-    if (shield.collected || dx * dx + dy * dy + dz * dz >= 2.05) continue;
+    if (shield.collected || Math.abs(raceMotor.distance - shield.distance) > 1.5 || Math.abs(raceMotor.lateral - shield.x) > 1.05 || raceMotor.jumpHeight > 1.4) continue;
     shield.collected = true;
     shield.mesh.visible = false;
     race.shield = true;
@@ -1510,24 +1725,24 @@ function updateRaceGameplay(dt, position) {
   }
   if (race.hitCooldown <= 0) {
     for (const obstacle of raceObstacles) {
-      if (Math.abs(position.x - obstacle.position.x) < obstacle.halfX + 0.4 && Math.abs(position.z - obstacle.z) < 1.22 && Math.abs(position.y - obstacle.position.y) < 1.55) {
-        hitObstacle(position);
+      if (Math.abs(raceMotor.distance - obstacle.distance) < 1.25 && Math.abs(raceMotor.lateral - obstacle.localX) < obstacle.halfX + 0.48 && raceMotor.jumpHeight < 1.35) {
+        hitObstacle();
         break;
       }
     }
   }
 
-  const nextCheckpoint = RACE_CHECKPOINT_Z[race.checkpointIndex];
-  if (nextCheckpoint !== undefined && position.z <= nextCheckpoint) {
+  const nextCheckpoint = RACE_CHECKPOINT_DISTANCES[race.checkpointIndex];
+  if (nextCheckpoint !== undefined && raceMotor.distance >= nextCheckpoint) {
     race.checkpointIndex += 1;
-    race.lastCheckpointZ = nextCheckpoint - 2.5;
+    race.lastCheckpointDistance = nextCheckpoint + 2.5;
     const nextSection = COURSE_SECTIONS[Math.min(race.checkpointIndex, COURSE_SECTIONS.length - 1)];
     showToast(`CHECKPOINT ${race.checkpointIndex} · ${nextSection.name.toUpperCase()}`, 1.7);
     playTone(440, 0.12, 'triangle', 0.1);
     playTone(660, 0.2, 'triangle', 0.09, 0.08);
     haptic(26);
   }
-  if (position.z <= RACE_FINISH_Z) finishRace();
+  if (raceMotor.distance >= RACE_LENGTH - 1) finishRace();
   updateRaceHud();
 }
 
@@ -1540,55 +1755,61 @@ function fixedUpdate(dt) {
   const position = playerBody.translation();
   const velocity = playerBody.linvel();
 
-  const groundRay = new RAPIER.Ray({ x: position.x, y: position.y, z: position.z }, { x: 0, y: -1, z: 0 });
-  const groundHit = world.castRay(groundRay, PLAYER_RADIUS + 0.16, true, undefined, undefined, playerCollider, playerBody);
-  state.grounded = Boolean(groundHit) && velocity.y < 1.2;
-  state.coyoteTime = state.grounded ? 0.1 : Math.max(0, state.coyoteTime - dt);
+  if (!state.mode.startsWith('race')) {
+    const groundRay = new RAPIER.Ray({ x: position.x, y: position.y, z: position.z }, { x: 0, y: -1, z: 0 });
+    const groundHit = world.castRay(groundRay, PLAYER_RADIUS + 0.16, true, undefined, undefined, playerCollider, playerBody);
+    state.grounded = Boolean(groundHit) && velocity.y < 1.2;
+    state.coyoteTime = state.grounded ? 0.1 : Math.max(0, state.coyoteTime - dt);
+  } else {
+    state.grounded = raceMotor.grounded;
+    state.coyoteTime = raceMotor.grounded ? 0.1 : 0;
+  }
 
   if (state.mode === 'race-countdown') {
     race.countdown -= dt;
     const number = Math.max(1, Math.ceil(race.countdown));
     countdownValue.textContent = String(number);
-    const held = playerBody.translation();
-    playerBody.setLinvel({ x: 0, y: playerBody.linvel().y, z: 0 }, true);
-    const startX = raceCenterX(race.lastCheckpointZ);
-    if (Math.abs(held.x - startX) > 0.2 || Math.abs(held.z - race.lastCheckpointZ) > 0.4) teleportPlayer(startX, race.lastCheckpointZ);
+    placeRacePlayer();
     if (race.countdown <= 0) {
       state.mode = 'race-active';
       countdown.classList.add('is-hidden');
-      raceForwardAt(race.lastCheckpointZ, forward);
-      playerBody.setLinvel({ x: forward.x * 22, y: 0, z: forward.z * 22 }, true);
+      raceMotor.speed = 26;
       showToast('GO!', 0.8);
       playTone(720, 0.18, 'triangle', 0.14);
       haptic(24);
     }
   }
 
-  if (state.mode === 'free' || state.mode === 'race-active') {
-    const racing = state.mode === 'race-active';
-    if (racing) raceForwardAt(position.z, forward);
-    else forward.set(-Math.sin(state.yaw), 0, -Math.cos(state.yaw));
+  if (state.mode === 'race-active') {
+    race.elapsed += dt;
+    const steer = THREE.MathUtils.clamp(input.touchX + (input.right ? 1 : 0) - (input.left ? 1 : 0), -1, 1);
+    const section = raceSectionAtDistance(raceMotor.distance);
+    const acceleration = raceMotor.speed < section.speed ? 30 : 64;
+    raceMotor.speed += THREE.MathUtils.clamp(section.speed - raceMotor.speed, -acceleration * dt, acceleration * dt);
+    const desiredLateralSpeed = steer * (18 + section.intensity * 0.65);
+    raceMotor.lateralVelocity = THREE.MathUtils.lerp(raceMotor.lateralVelocity, desiredLateralSpeed, 1 - Math.exp(-20 * dt));
+    raceMotor.lateral += raceMotor.lateralVelocity * dt;
+    const lateralLimit = RACE_HALF_WIDTH - PLAYER_RADIUS - 0.2;
+    if (Math.abs(raceMotor.lateral) > lateralLimit) {
+      raceMotor.lateral = THREE.MathUtils.clamp(raceMotor.lateral, -lateralLimit, lateralLimit);
+      raceMotor.lateralVelocity *= 0.2;
+    }
+
+    raceMotor.distance = Math.min(RACE_LENGTH, raceMotor.distance + raceMotor.speed * dt);
+    raceMotor.roll += raceMotor.speed * dt / PLAYER_RADIUS;
+    raceMotor.jumpVelocity -= 52 * dt;
+    raceMotor.jumpHeight += raceMotor.jumpVelocity * dt;
+    if (raceMotor.jumpHeight <= 0) {
+      raceMotor.jumpHeight = 0;
+      raceMotor.jumpVelocity = 0;
+      raceMotor.grounded = true;
+    } else raceMotor.grounded = false;
+    placeRacePlayer();
+  } else if (state.mode === 'free') {
+    forward.set(-Math.sin(state.yaw), 0, -Math.cos(state.yaw));
     right.set(-forward.z, 0, forward.x);
     moveDirection.set(0, 0, 0);
-    if (racing) {
-      race.elapsed += dt;
-      moveDirection.add(forward);
-      const steer = THREE.MathUtils.clamp(input.touchX + (input.right ? 1 : 0) - (input.left ? 1 : 0), -1, 1);
-      const section = raceSectionAt(position.z);
-      const currentForwardSpeed = Math.max(0, velocity.x * forward.x + velocity.z * forward.z);
-      const currentLateralSpeed = velocity.x * right.x + velocity.z * right.z;
-      const acceleration = currentForwardSpeed < section.speed ? 34 : 72;
-      const nextForwardSpeed = currentForwardSpeed + THREE.MathUtils.clamp(section.speed - currentForwardSpeed, -acceleration * dt, acceleration * dt);
-      const desiredLateralSpeed = steer * (17.5 + section.intensity * 0.45);
-      const grip = state.grounded ? 24 : 8;
-      const nextLateralSpeed = THREE.MathUtils.lerp(currentLateralSpeed, desiredLateralSpeed, 1 - Math.exp(-grip * dt));
-      playerBody.setLinvel({
-        x: forward.x * nextForwardSpeed + right.x * nextLateralSpeed,
-        y: velocity.y,
-        z: forward.z * nextForwardSpeed + right.z * nextLateralSpeed,
-      }, true);
-      playerBody.applyTorqueImpulse({ x: forward.z * 0.24, y: 0, z: -forward.x * 0.24 - steer * 0.13 }, true);
-    } else if (isMobileDevice) {
+    if (isMobileDevice) {
       moveDirection.add(forward);
       moveDirection.addScaledVector(right, input.touchX);
     } else {
@@ -1598,7 +1819,7 @@ function fixedUpdate(dt) {
       if (input.left) moveDirection.sub(right);
     }
 
-    if (!racing && moveDirection.lengthSq() > 0) {
+    if (moveDirection.lengthSq() > 0) {
       const moveStrength = Math.min(1, moveDirection.length());
       moveDirection.normalize();
       const horizontalSpeed = Math.hypot(velocity.x, velocity.z);
@@ -1623,23 +1844,37 @@ function fixedUpdate(dt) {
   world.step();
 
   const next = playerBody.translation();
-  if (state.mode === 'race-active') updateRaceGameplay(dt, next);
-  if (state.mode.startsWith('race')) {
-    if (next.y < raceCenterHeight(next.z) - 12 || Math.abs(next.x - raceCenterX(next.z)) > 13 || next.z > RACE_START_Z + 10) resetPlayer();
-  } else if (next.y < -8 || Math.abs(next.x) > 50 || Math.abs(next.z) > 50) resetPlayer();
+  if (state.mode === 'race-active') updateRaceGameplay(dt);
+  if (!state.mode.startsWith('race') && (next.y < -8 || Math.abs(next.x) > 50 || Math.abs(next.z) > 50)) resetPlayer();
 }
 
 const cameraTarget = new THREE.Vector3();
 const desiredCamera = new THREE.Vector3();
 const cameraDirection = new THREE.Vector3();
 const raceCameraForward = new THREE.Vector3();
+const raceCameraUp = new THREE.Vector3(0, 1, 0);
+const raceBallBasis = new THREE.Matrix4();
+const raceBallBaseQuaternion = new THREE.Quaternion();
+const raceBallRollQuaternion = new THREE.Quaternion();
 const smoothTarget = new THREE.Vector3(0, 1.3, 5.5);
 
 function updateVisuals(dt) {
   const position = playerBody.translation();
   const rotation = playerBody.rotation();
   ball.position.set(position.x, position.y, position.z);
-  ball.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+  canvas.dataset.raceDistance = raceMotor.distance.toFixed(2);
+  canvas.dataset.raceLateral = raceMotor.lateral.toFixed(2);
+  canvas.dataset.jumpHeight = raceMotor.jumpHeight.toFixed(3);
+  canvas.dataset.jumpVelocity = raceMotor.jumpVelocity.toFixed(3);
+  canvas.dataset.grounded = String(state.grounded);
+  canvas.dataset.trackLoop = getRaceFrame(raceMotor.distance).loop || '';
+  if (state.mode.startsWith('race')) {
+    const frame = getRaceFrame(raceMotor.distance);
+    makeRaceBasis(frame, raceBallBasis);
+    raceBallBaseQuaternion.setFromRotationMatrix(raceBallBasis);
+    raceBallRollQuaternion.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -raceMotor.roll);
+    ball.quaternion.copy(raceBallBaseQuaternion).multiply(raceBallRollQuaternion);
+  } else ball.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
   for (const block of floatingWoodBlocks) {
     const blockPosition = block.body.translation();
     block.mesh.position.set(blockPosition.x, blockPosition.y, blockPosition.z);
@@ -1650,7 +1885,7 @@ function updateVisuals(dt) {
     let coinMatricesChanged = false;
     for (let i = 0; i < raceCoins.length; i++) {
       const coin = raceCoins[i];
-      if (!coin.collected && Math.abs(coin.z - position.z) < 230) {
+      if (!coin.collected && Math.abs(coin.distance - raceMotor.distance) < 230) {
         setRaceCoinInstance(coin, i, state.elapsed * 5.8);
         coinMatricesChanged = true;
       }
@@ -1658,8 +1893,11 @@ function updateVisuals(dt) {
     if (coinMatricesChanged) raceCoinMesh.instanceMatrix.needsUpdate = true;
     for (let i = 0; i < raceShields.length; i++) {
       const shield = raceShields[i];
-      shield.mesh.rotation.y += dt * 2.8;
-      if (!shield.collected) shield.mesh.position.y = shield.baseY + Math.sin(state.elapsed * 2.4 + i) * 0.16;
+      shield.mesh.rotateOnAxis(new THREE.Vector3(0, 1, 0), dt * 2.8);
+      if (!shield.collected) {
+        const frame = getRaceFrame(shield.distance);
+        shield.mesh.position.copy(shield.basePosition).addScaledVector(frame.up, Math.sin(state.elapsed * 2.4 + i) * 0.16);
+      }
     }
   }
 
@@ -1668,15 +1906,22 @@ function updateVisuals(dt) {
   sun.target.updateMatrixWorld();
 
   if (state.mode.startsWith('race')) {
-    raceForwardAt(position.z, raceCameraForward);
-    cameraTarget.set(position.x, position.y + 1.35, position.z).addScaledVector(raceCameraForward, 5.2);
+    const frame = getRaceFrame(raceMotor.distance);
+    raceCameraForward.copy(frame.tangent);
+    raceCameraUp.lerp(frame.up, 1 - Math.exp(-dt * 12)).normalize();
+    camera.up.lerp(raceCameraUp, 1 - Math.exp(-dt * 10)).normalize();
+    cameraTarget.set(position.x, position.y, position.z)
+      .addScaledVector(frame.up, 1.25)
+      .addScaledVector(raceCameraForward, 6.4);
     smoothTarget.lerp(cameraTarget, 1 - Math.exp(-dt * 15));
-    desiredCamera.copy(smoothTarget).addScaledVector(raceCameraForward, -10.2);
-    desiredCamera.y += 2.8;
-    const speed = Math.hypot(playerBody.linvel().x, playerBody.linvel().z);
+    desiredCamera.copy(position)
+      .addScaledVector(raceCameraForward, -11.5)
+      .addScaledVector(frame.up, 4.4);
+    const speed = raceMotor.speed;
     camera.fov = THREE.MathUtils.lerp(camera.fov, 40 + THREE.MathUtils.clamp((speed - 24) / 38, 0, 1) * 9, 1 - Math.exp(-dt * 5));
     camera.updateProjectionMatrix();
   } else {
+    camera.up.lerp(new THREE.Vector3(0, 1, 0), 1 - Math.exp(-dt * 10)).normalize();
     // Aim above the ball so it lives in the lower third and tall architecture remains visible.
     cameraTarget.set(position.x, position.y + 2.1, position.z);
     smoothTarget.lerp(cameraTarget, 1 - Math.exp(-dt * 11));
@@ -1694,15 +1939,17 @@ function updateVisuals(dt) {
   cameraDirection.copy(desiredCamera).sub(smoothTarget);
   const desiredDistance = cameraDirection.length();
   cameraDirection.normalize();
-  const cameraRay = new RAPIER.Ray(smoothTarget, cameraDirection);
-  const cameraHit = world.castRay(cameraRay, desiredDistance, true, undefined, undefined, playerCollider, playerBody);
-  if (cameraHit) desiredCamera.copy(smoothTarget).addScaledVector(cameraDirection, Math.max(1.4, cameraHit.timeOfImpact - 0.28));
+  if (!state.mode.startsWith('race')) {
+    const cameraRay = new RAPIER.Ray(smoothTarget, cameraDirection);
+    const cameraHit = world.castRay(cameraRay, desiredDistance, true, undefined, undefined, playerCollider, playerBody);
+    if (cameraHit) desiredCamera.copy(smoothTarget).addScaledVector(cameraDirection, Math.max(1.4, cameraHit.timeOfImpact - 0.28));
+  }
 
   camera.position.lerp(desiredCamera, 1 - Math.exp(-dt * 10));
   camera.lookAt(smoothTarget);
 
   if (windGain && windFilter) {
-    const speed = Math.hypot(playerBody.linvel().x, playerBody.linvel().z);
+    const speed = state.mode.startsWith('race') ? raceMotor.speed : Math.hypot(playerBody.linvel().x, playerBody.linvel().z);
     const active = state.mode === 'race-active';
     windGain.gain.setTargetAtTime(active ? THREE.MathUtils.clamp(speed / 60, 0.03, 0.25) : 0, audioContext.currentTime, 0.08);
     windFilter.frequency.setTargetAtTime(360 + speed * 24, audioContext.currentTime, 0.1);
@@ -1798,10 +2045,12 @@ window.advanceTime = (ms) => {
 window.render_game_to_text = () => {
   const p = playerBody.translation();
   const v = playerBody.linvel();
-  const stateForward = raceForwardAt(p.z, new THREE.Vector3());
-  const stateRight = new THREE.Vector3(-stateForward.z, 0, stateForward.x);
+  const currentRaceFrame = getRaceFrame(raceMotor.distance, {
+    center: new THREE.Vector3(), tangent: new THREE.Vector3(), right: new THREE.Vector3(), up: new THREE.Vector3(), bank: 0, loop: null,
+  });
+  const currentSection = raceSectionAtDistance(raceMotor.distance);
   return JSON.stringify({
-    coordinateSystem: 'Y up; Free Mode uses camera-relative movement; Race Mode follows a gently curving centerline toward negative Z from elevation 720 to -400',
+    coordinateSystem: 'Free Mode uses world Y-up physics; Race Mode uses a track-local frame that banks and rotates through two vertical loops',
     mode: state.mode,
     lastKey: state.lastKey,
     player: {
@@ -1812,7 +2061,7 @@ window.render_game_to_text = () => {
       jumpBuffer: +input.jumpBuffer.toFixed(3),
       jumpCount: state.jumpCount,
       airJumpCount: state.airJumpCount,
-      horizontalSpeed: +Math.hypot(v.x, v.z).toFixed(2),
+      horizontalSpeed: +(state.mode.startsWith('race') ? raceMotor.speed : Math.hypot(v.x, v.z)).toFixed(2),
     },
     camera: {
       yaw: +state.yaw.toFixed(2),
@@ -1822,16 +2071,20 @@ window.render_game_to_text = () => {
     },
     race: {
       course: 'Sunset Velocity',
-      section: raceSectionAt(p.z).name,
-      sectionIndex: COURSE_SECTIONS.indexOf(raceSectionAt(p.z)) + 1,
+      section: currentSection.name,
+      sectionIndex: COURSE_SECTIONS.indexOf(currentSection) + 1,
       sectionCount: COURSE_SECTIONS.length,
       courseLength: RACE_LENGTH,
-      distanceTravelled: +raceDistanceAt(p.z).toFixed(1),
-      elevation: +raceCenterHeight(p.z).toFixed(1),
-      targetSpeed: raceSectionAt(p.z).speed,
-      forwardSpeed: +(v.x * stateForward.x + v.z * stateForward.z).toFixed(2),
-      lateralSpeed: +(v.x * stateRight.x + v.z * stateRight.z).toFixed(2),
-      lateralOffset: +(p.x - raceCenterX(p.z)).toFixed(2),
+      distanceTravelled: +raceMotor.distance.toFixed(1),
+      elevation: +currentRaceFrame.center.y.toFixed(1),
+      targetSpeed: currentSection.speed,
+      forwardSpeed: +raceMotor.speed.toFixed(2),
+      lateralSpeed: +raceMotor.lateralVelocity.toFixed(2),
+      lateralOffset: +raceMotor.lateral.toFixed(2),
+      jumpHeight: +raceMotor.jumpHeight.toFixed(2),
+      jumpVelocity: +raceMotor.jumpVelocity.toFixed(2),
+      trackLoop: currentRaceFrame.loop,
+      physicsModel: 'deterministic kinematic arcade motor; no race-surface rigid-body bounce',
       elapsed: +race.elapsed.toFixed(3),
       formattedTime: formatTime(Math.max(race.elapsed, 0.0001)),
       countdown: +Math.max(0, race.countdown).toFixed(2),
@@ -1840,8 +2093,8 @@ window.render_game_to_text = () => {
       remainingCoins: raceCoins.filter((coin) => !coin.collected).length,
       shield: race.shield,
       checkpoint: race.checkpointIndex,
-      checkpointCount: RACE_CHECKPOINT_Z.length,
-      progress: +raceProgressAt(p.z).toFixed(3),
+      checkpointCount: RACE_CHECKPOINT_DISTANCES.length,
+      progress: +(raceMotor.distance / RACE_LENGTH).toFixed(3),
       bestTime: +race.bestTime.toFixed(3),
       bestCoins: race.bestCoins,
       obstacleCount: raceObstacles.length,
@@ -1864,7 +2117,7 @@ window.render_game_to_text = () => {
     }),
     environment: { playerMaterial: 'rigid texture-free procedural PBR marble', sky: 'procedural Preetham', sunElevation: skySettings.elevation, water: 'planar reflective', waves: 'three small geometric wave bands, max amplitude 0.046' },
     landmarks: state.mode.startsWith('race')
-      ? [`start gate near (${raceCenterX(RACE_START_Z - 2).toFixed(1)}, ${RACE_START_Z - 2}) at elevation ${raceCenterHeight(RACE_START_Z).toFixed(0)}`, `${RACE_CHECKPOINT_Z.length} checkpoints divide ${COURSE_SECTIONS.length} paced sections`, `finish line at z ${RACE_FINISH_Z} and elevation ${raceCenterHeight(RACE_FINISH_Z).toFixed(0)}`, `6500-unit half-pipe with sweeping centerline curves and high banks`]
+      ? [`start elevation ${raceTrackSamples[0].center.y.toFixed(0)}`, `${RACE_CHECKPOINT_DISTANCES.length} checkpoints divide ${COURSE_SECTIONS.length} paced sections`, `finish elevation ${raceTrackSamples.at(-1).center.y.toFixed(0)}`, `6500-unit banked half-pipe with strong S-turns and ${TRACK_LOOPS.length} complete vertical loops`]
       : ['gold arch at (0, -5)', 'rose/coral stairs near (-7, -5)', 'coral arch at (7, -12)'],
   });
 };
