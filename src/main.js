@@ -10,6 +10,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { DriveMode } from './DriveMode.js';
 import './style.css';
 
 await RAPIER.init({});
@@ -18,6 +19,25 @@ const canvas = document.querySelector('#game');
 const splash = document.querySelector('#splash');
 const freeModeButton = document.querySelector('#free-mode-button');
 const raceModeButton = document.querySelector('#race-mode-button');
+const driveModeButton = document.querySelector('#drive-mode-button');
+const driveBriefing = document.querySelector('#drive-briefing');
+const driveStartButton = document.querySelector('#drive-start-button');
+const driveBackButton = document.querySelector('#drive-back-button');
+const driveFinishPanel = document.querySelector('#drive-finish-panel');
+const driveReplayButton = document.querySelector('#drive-replay-button');
+const driveFinishBackButton = document.querySelector('#drive-finish-back');
+const driveBestDistance = document.querySelector('#drive-best-distance');
+const driveBestShards = document.querySelector('#drive-best-shards');
+const driveFinishDistance = document.querySelector('#drive-finish-distance');
+const driveFinishShards = document.querySelector('#drive-finish-shards');
+const driveFinishBest = document.querySelector('#drive-finish-best');
+const driveFinishRecord = document.querySelector('#drive-finish-record');
+const driveHud = document.querySelector('#drive-hud');
+const driveHudDistance = document.querySelector('#drive-hud-distance');
+const driveHudShards = document.querySelector('#drive-hud-shards');
+const driveHudLane = document.querySelector('#drive-hud-lane');
+const driveHudSpeed = document.querySelector('#drive-hud-speed');
+const driveSpeedFill = document.querySelector('#drive-speed-fill');
 const raceBriefing = document.querySelector('#race-briefing');
 const raceStartButton = document.querySelector('#race-start-button');
 const raceBackButton = document.querySelector('#race-back-button');
@@ -45,6 +65,7 @@ const resetButton = document.querySelector('#reset-button');
 const fpsValue = document.querySelector('#fps-value');
 const touchJoystick = document.querySelector('#touch-joystick');
 const touchStick = document.querySelector('#touch-stick');
+const touchHint = document.querySelector('#touch-hint');
 const pageQuery = new URLSearchParams(location.search);
 const mobileQuery = pageQuery.has('mobile');
 const debugRaceQuery = pageQuery.has('debug');
@@ -57,7 +78,7 @@ const isMobileDevice = mobileQuery || Boolean(
 );
 document.body.classList.toggle('is-mobile', isMobileDevice);
 if (isMobileDevice) {
-  document.querySelector('#touch-hint').textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
+  touchHint.textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
 }
 
 const scene = new THREE.Scene();
@@ -1399,6 +1420,11 @@ const state = {
   airJumpCount: 0, lastKey: '', elapsed: 0, yaw: 0, pitch: 0.18,
   dragging: false, fps: 0, touchJumpCooldown: 0,
 };
+const driveMode = new DriveMode(scene, {
+  isMobile: isMobileDevice,
+  onCollect: () => handleDriveCollect(),
+  onCrash: () => finishDrive(),
+});
 const keyMap = {
   KeyW: 'forward', ArrowUp: 'forward', KeyS: 'back', ArrowDown: 'back',
   KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right',
@@ -1422,6 +1448,12 @@ const race = {
   shieldPickups: 0,
   shieldPops: 0,
   coinCrashes: 0,
+};
+
+const driveSession = {
+  countdown: 0,
+  bestDistance: readRecord('game-dream-drive-best-distance'),
+  bestShards: readRecord('game-dream-drive-best-shards'),
 };
 
 const raceMotor = {
@@ -1457,8 +1489,20 @@ function refreshRecordUI() {
   finishBest.textContent = formatTime(race.bestTime);
 }
 
+function isRaceMode() {
+  return state.mode.startsWith('race');
+}
+
+function isDriveMode() {
+  return state.mode.startsWith('drive');
+}
+
+function isRunnerMode() {
+  return isRaceMode() || isDriveMode();
+}
+
 function setPanel(panel) {
-  for (const item of [splash, raceBriefing, finishPanel]) item.classList.toggle('is-hidden', item !== panel);
+  for (const item of [splash, raceBriefing, finishPanel, driveBriefing, driveFinishPanel]) item.classList.toggle('is-hidden', item !== panel);
 }
 
 function showToast(message, duration = 1.25) {
@@ -1467,17 +1511,19 @@ function showToast(message, duration = 1.25) {
   race.toastTimer = duration;
 }
 
-function applyModeLook(racing) {
-  renderer.toneMappingExposure = racing ? 0.54 : 0.72;
-  scene.environmentIntensity = racing ? 0.22 : 0.58;
-  scene.fog.color.set(racing ? '#091027' : '#9fc4ca');
-  scene.fog.near = racing ? 105 : 70;
-  scene.fog.far = racing ? 330 : 190;
-  sun.color.set(racing ? '#8adfff' : '#ffd2a0');
-  sun.intensity = racing ? 0.62 : 3.8;
+function applyModeLook(profile = 'free') {
+  const racing = profile === true || profile === 'race';
+  const driving = profile === 'drive';
+  renderer.toneMappingExposure = driving ? 0.66 : (racing ? 0.54 : 0.72);
+  scene.environmentIntensity = driving ? 0.38 : (racing ? 0.22 : 0.58);
+  scene.fog.color.set(driving ? '#070817' : (racing ? '#091027' : '#9fc4ca'));
+  scene.fog.near = driving ? 58 : (racing ? 105 : 70);
+  scene.fog.far = driving ? 255 : (racing ? 330 : 190);
+  sun.color.set(driving ? '#a17cff' : (racing ? '#8adfff' : '#ffd2a0'));
+  sun.intensity = driving ? 0.38 : (racing ? 0.62 : 3.8);
   raceSkyDome.visible = racing;
   raceMoon.visible = racing;
-  sky.visible = !racing;
+  sky.visible = !racing && !driving;
 }
 
 let audioContext;
@@ -1577,9 +1623,13 @@ function showSplash() {
   state.mode = 'splash';
   state.started = false;
   raceGroup.visible = false;
+  driveMode.setVisible(false);
+  ball.visible = true;
   raceHud.classList.add('is-hidden');
+  driveHud.classList.add('is-hidden');
   countdown.classList.add('is-hidden');
-  applyModeLook(false);
+  touchHint.textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
+  applyModeLook('free');
   setPanel(splash);
 }
 
@@ -1590,9 +1640,13 @@ function startFreeMode() {
   state.yaw = 0;
   state.pitch = 0.18;
   raceGroup.visible = false;
+  driveMode.setVisible(false);
+  ball.visible = true;
   raceHud.classList.add('is-hidden');
+  driveHud.classList.add('is-hidden');
   countdown.classList.add('is-hidden');
-  applyModeLook(false);
+  touchHint.textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
+  applyModeLook('free');
   setPanel(null);
   camera.up.set(0, 1, 0);
   teleportPlayer(0, 5.5);
@@ -1604,9 +1658,13 @@ function showRaceBriefing() {
   state.mode = 'race-briefing';
   state.started = false;
   raceGroup.visible = true;
+  driveMode.setVisible(false);
+  ball.visible = true;
   raceHud.classList.add('is-hidden');
+  driveHud.classList.add('is-hidden');
   countdown.classList.add('is-hidden');
-  applyModeLook(true);
+  touchHint.textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
+  applyModeLook('race');
   refreshRecordUI();
   setPanel(raceBriefing);
   setRaceBodyMode(true);
@@ -1647,6 +1705,10 @@ function startRace() {
   state.yaw = 0;
   state.pitch = 0.16;
   raceGroup.visible = true;
+  driveMode.setVisible(false);
+  ball.visible = true;
+  driveHud.classList.add('is-hidden');
+  applyModeLook('race');
   setPanel(null);
   raceHud.classList.remove('is-hidden');
   countdown.classList.remove('is-hidden');
@@ -1657,6 +1719,97 @@ function startRace() {
   updateRaceHud();
   playTone(420, 0.08, 'sine', 0.1);
   canvas.focus();
+}
+
+function refreshDriveRecordUI() {
+  driveBestDistance.textContent = `${Math.floor(driveSession.bestDistance)} m`;
+  driveBestShards.textContent = String(driveSession.bestShards);
+  driveFinishBest.textContent = `${Math.floor(driveSession.bestDistance)} m`;
+}
+
+function showDriveBriefing() {
+  ensureAudio();
+  state.mode = 'drive-briefing';
+  state.started = false;
+  raceGroup.visible = false;
+  driveMode.setVisible(true);
+  driveMode.reset();
+  ball.visible = false;
+  raceHud.classList.add('is-hidden');
+  driveHud.classList.add('is-hidden');
+  countdown.classList.add('is-hidden');
+  touchHint.textContent = 'SWIPE LEFT / RIGHT · THREE LANES';
+  applyModeLook('drive');
+  refreshDriveRecordUI();
+  setPanel(driveBriefing);
+  setRaceBodyMode(true);
+  driveMode.getCameraPose(smoothTarget, camera.position);
+  camera.up.set(0, 1, 0);
+  camera.lookAt(smoothTarget);
+}
+
+function startDrive() {
+  ensureAudio();
+  driveMode.start();
+  driveSession.countdown = debugRaceQuery ? 0.08 : 3.25;
+  state.mode = 'drive-countdown';
+  state.started = true;
+  raceGroup.visible = false;
+  driveMode.setVisible(true);
+  ball.visible = false;
+  raceHud.classList.add('is-hidden');
+  driveHud.classList.remove('is-hidden');
+  countdown.classList.remove('is-hidden');
+  countdownValue.textContent = '3';
+  touchHint.textContent = 'SWIPE LEFT / RIGHT · THREE LANES';
+  applyModeLook('drive');
+  setPanel(null);
+  setRaceBodyMode(true);
+  driveMode.getCameraPose(smoothTarget, camera.position);
+  camera.up.set(0, 1, 0);
+  camera.lookAt(smoothTarget);
+  updateDriveHud();
+  playTone(190, 0.11, 'sawtooth', 0.08);
+  canvas.focus();
+}
+
+function writeDriveRecords() {
+  try {
+    localStorage.setItem('game-dream-drive-best-distance', String(driveSession.bestDistance));
+    localStorage.setItem('game-dream-drive-best-shards', String(driveSession.bestShards));
+  } catch {
+    // The current session still keeps its records if storage is unavailable.
+  }
+}
+
+function handleDriveCollect() {
+  showToast('DATA SHARD +1', 0.8);
+  playTone(680 + (driveMode.state.shards % 4) * 90, 0.08, 'triangle', 0.08);
+  haptic(8);
+  updateDriveHud();
+}
+
+function finishDrive() {
+  if (state.mode !== 'drive-active') return;
+  state.mode = 'drive-crashed';
+  state.started = false;
+  const distance = driveMode.state.distance;
+  const shards = driveMode.state.shards;
+  const newDistanceRecord = distance > driveSession.bestDistance;
+  const newShardRecord = shards > driveSession.bestShards;
+  if (newDistanceRecord) driveSession.bestDistance = distance;
+  if (newShardRecord) driveSession.bestShards = shards;
+  writeDriveRecords();
+  refreshDriveRecordUI();
+  driveFinishDistance.textContent = `${Math.floor(distance)} m`;
+  driveFinishShards.textContent = String(shards);
+  driveFinishRecord.textContent = newDistanceRecord ? 'NEW DISTANCE RECORD' : (newShardRecord ? 'NEW SHARD RECORD' : 'RUN SAVED');
+  driveHud.classList.add('is-hidden');
+  countdown.classList.add('is-hidden');
+  setPanel(driveFinishPanel);
+  showToast('IMPACT · SIGNAL LOST', 1.4);
+  playTone(92, 0.4, 'sawtooth', 0.14);
+  haptic([80, 35, 110]);
 }
 
 function finishRace() {
@@ -1686,6 +1839,20 @@ function finishRace() {
 
 addEventListener('keydown', (event) => {
   state.lastKey = `${event.code}:${event.key}`;
+  if (state.mode === 'drive-active' && !event.repeat && ['ArrowLeft', 'KeyA', 'ArrowRight', 'KeyD'].includes(event.code)) {
+    const direction = event.code === 'ArrowLeft' || event.code === 'KeyA' ? -1 : 1;
+    if (driveMode.shiftLane(direction)) {
+      playTone(direction < 0 ? 250 : 310, 0.055, 'square', 0.035);
+      updateDriveHud();
+    }
+    event.preventDefault();
+    return;
+  }
+  if (event.code === 'Enter' && (state.mode === 'drive-briefing' || state.mode === 'drive-crashed')) {
+    startDrive();
+    event.preventDefault();
+    return;
+  }
   if (debugRaceQuery && state.mode === 'race-active' && ['Digit1', 'Digit2', 'End'].includes(event.code)) {
     const debugDistance = event.code === 'Digit1' ? TRACK_LOOPS[0].start - 28 : (event.code === 'Digit2' ? TRACK_LOOPS[1].start - 28 : RACE_LENGTH - 25);
     Object.assign(raceMotor, { distance: debugDistance, speed: raceSectionAtDistance(debugDistance).speed, lateral: 0, lateralVelocity: 0, jumpHeight: 0, jumpVelocity: 0, grounded: true });
@@ -1731,9 +1898,11 @@ const touchControl = {
   startedAt: 0,
   maxDistance: 0,
   jumpTriggered: false,
+  swipeCommitted: false,
 };
 
 function maybeTriggerTouchJump(clientX, clientY) {
+  if (isDriveMode()) return;
   if (touchControl.jumpTriggered || state.touchJumpCooldown > 0) return;
   const swipeX = clientX - touchControl.originX;
   const swipeY = clientY - touchControl.originY;
@@ -1745,6 +1914,21 @@ function maybeTriggerTouchJump(clientX, clientY) {
 
 function endTouchPointer(event) {
   if (event.pointerId !== touchControl.id) return;
+  if (state.mode === 'drive-active') {
+    const swipeX = event.clientX - touchControl.originX;
+    const swipeY = event.clientY - touchControl.originY;
+    if (!touchControl.swipeCommitted && Math.abs(swipeX) > 34 && Math.abs(swipeX) > Math.abs(swipeY) * 1.15) {
+      driveMode.shiftLane(Math.sign(swipeX));
+      touchControl.swipeCommitted = true;
+    }
+    touchControl.id = null;
+    input.touchX = 0;
+    touchStick.style.transform = 'translateX(0px)';
+    touchJoystick.classList.remove('is-active', 'did-jump');
+    if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+    updateDriveHud();
+    return;
+  }
   maybeTriggerTouchJump(event.clientX, event.clientY);
   const distance = Math.hypot(event.clientX - touchControl.originX, event.clientY - touchControl.originY);
   if (!touchControl.jumpTriggered && performance.now() - touchControl.startedAt < 280 && Math.max(distance, touchControl.maxDistance) < 22) {
@@ -1759,14 +1943,14 @@ function endTouchPointer(event) {
 }
 
 canvas.addEventListener('pointerdown', (event) => {
-  if (state.mode === 'splash' || state.mode === 'race-briefing' || state.mode === 'race-finished') return;
+  if (['splash', 'race-briefing', 'race-finished', 'drive-briefing', 'drive-crashed'].includes(state.mode)) return;
   try {
     canvas.setPointerCapture(event.pointerId);
   } catch {
     // Synthetic tests and a few embedded browsers can reject pointer capture;
     // the gesture still works because events remain bound to the canvas.
   }
-  if (isMobileDevice || state.mode.startsWith('race')) {
+  if (isMobileDevice || isRunnerMode()) {
     event.preventDefault();
     if (touchControl.id !== null) return;
     touchControl.id = event.pointerId;
@@ -1775,6 +1959,7 @@ canvas.addEventListener('pointerdown', (event) => {
     touchControl.startedAt = performance.now();
     touchControl.maxDistance = 0;
     touchControl.jumpTriggered = false;
+    touchControl.swipeCommitted = false;
     touchJoystick.style.left = `${THREE.MathUtils.clamp(event.clientX, 88, innerWidth - 88)}px`;
     touchJoystick.style.top = `${THREE.MathUtils.clamp(event.clientY, 46, innerHeight - 46)}px`;
     touchJoystick.classList.add('is-active');
@@ -1784,7 +1969,7 @@ canvas.addEventListener('pointerdown', (event) => {
 });
 
 canvas.addEventListener('pointerup', (event) => {
-  if (isMobileDevice || state.mode.startsWith('race')) endTouchPointer(event);
+  if (isMobileDevice || isRunnerMode()) endTouchPointer(event);
   else {
     state.dragging = false;
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
@@ -1793,7 +1978,25 @@ canvas.addEventListener('pointerup', (event) => {
 canvas.addEventListener('pointercancel', endTouchPointer);
 
 canvas.addEventListener('pointermove', (event) => {
-  if ((isMobileDevice || state.mode.startsWith('race')) && event.pointerId === touchControl.id) {
+  if (state.mode === 'drive-active' && event.pointerId === touchControl.id) {
+    touchControl.lastX = event.clientX;
+    touchControl.lastY = event.clientY;
+    const totalX = event.clientX - touchControl.originX;
+    const totalY = event.clientY - touchControl.originY;
+    const dx = THREE.MathUtils.clamp(totalX, -64, 64);
+    touchControl.maxDistance = Math.max(touchControl.maxDistance, Math.hypot(totalX, totalY));
+    touchStick.style.transform = `translateX(${dx}px)`;
+    if (!touchControl.swipeCommitted && Math.abs(totalX) > 36 && Math.abs(totalX) > Math.abs(totalY) * 1.15) {
+      if (driveMode.shiftLane(Math.sign(totalX))) {
+        playTone(totalX < 0 ? 250 : 310, 0.055, 'square', 0.035);
+        haptic(7);
+      }
+      touchControl.swipeCommitted = true;
+      updateDriveHud();
+    }
+    return;
+  }
+  if ((isMobileDevice || isRaceMode()) && event.pointerId === touchControl.id) {
     touchControl.lastX = event.clientX;
     touchControl.lastY = event.clientY;
     const dx = THREE.MathUtils.clamp(event.clientX - touchControl.originX, -64, 64);
@@ -1814,7 +2017,9 @@ function toggleFullscreen() {
 }
 
 function resetPlayer() {
-  if (state.mode.startsWith('race')) {
+  if (isDriveMode()) {
+    startDrive();
+  } else if (isRaceMode()) {
     Object.assign(raceMotor, {
       distance: race.lastCheckpointDistance,
       speed: 22,
@@ -1878,6 +2083,11 @@ function requestJump() {
 
 freeModeButton.addEventListener('click', startFreeMode);
 raceModeButton.addEventListener('click', showRaceBriefing);
+driveModeButton.addEventListener('click', showDriveBriefing);
+driveStartButton.addEventListener('click', startDrive);
+driveBackButton.addEventListener('click', showSplash);
+driveReplayButton.addEventListener('click', startDrive);
+driveFinishBackButton.addEventListener('click', showSplash);
 raceStartButton.addEventListener('click', startRace);
 raceBackButton.addEventListener('click', showSplash);
 raceReplayButton.addEventListener('click', startRace);
@@ -1892,6 +2102,14 @@ function updateRaceHud() {
   hudSection.textContent = section.name.toUpperCase();
   hudShield.classList.toggle('is-active', race.shield);
   speedFill.style.width = `${THREE.MathUtils.clamp(raceMotor.speed / 64, 0, 1) * 100}%`;
+}
+
+function updateDriveHud() {
+  driveHudDistance.textContent = `${Math.floor(driveMode.state.distance)} m`;
+  driveHudShards.textContent = String(driveMode.state.shards);
+  driveHudLane.textContent = `${driveMode.state.targetLane + 1} / 3`;
+  driveHudSpeed.textContent = `${Math.round(driveMode.state.speed * 4.2)} KM/H`;
+  driveSpeedFill.style.width = `${THREE.MathUtils.clamp(driveMode.state.speed / 62, 0, 1) * 100}%`;
 }
 
 function collectCoin(coin) {
@@ -1977,14 +2195,17 @@ function fixedUpdate(dt) {
   const position = playerBody.translation();
   const velocity = playerBody.linvel();
 
-  if (!state.mode.startsWith('race')) {
+  if (state.mode === 'free') {
     const groundRay = new RAPIER.Ray({ x: position.x, y: position.y, z: position.z }, { x: 0, y: -1, z: 0 });
     const groundHit = world.castRay(groundRay, PLAYER_RADIUS + 0.16, true, undefined, undefined, playerCollider, playerBody);
     state.grounded = Boolean(groundHit) && velocity.y < 1.2;
     state.coyoteTime = state.grounded ? 0.1 : Math.max(0, state.coyoteTime - dt);
-  } else {
+  } else if (isRaceMode()) {
     state.grounded = raceMotor.grounded;
     state.coyoteTime = raceMotor.grounded ? 0.1 : 0;
+  } else if (isDriveMode()) {
+    state.grounded = true;
+    state.coyoteTime = 0;
   }
 
   if (state.mode === 'race-countdown') {
@@ -2000,6 +2221,23 @@ function fixedUpdate(dt) {
       playTone(720, 0.18, 'triangle', 0.14);
       haptic(24);
     }
+  }
+
+  if (state.mode === 'drive-countdown') {
+    driveSession.countdown -= dt;
+    countdownValue.textContent = String(Math.max(1, Math.ceil(driveSession.countdown)));
+    if (driveSession.countdown <= 0) {
+      state.mode = 'drive-active';
+      countdown.classList.add('is-hidden');
+      showToast('NIGHTSHIFT LIVE', 0.9);
+      playTone(420, 0.16, 'sawtooth', 0.1);
+      haptic(20);
+    }
+  }
+
+  if (isDriveMode()) {
+    driveMode.update(dt, state.mode === 'drive-active');
+    if (state.mode === 'drive-active') updateDriveHud();
   }
 
   if (state.mode === 'race-active') {
@@ -2067,7 +2305,7 @@ function fixedUpdate(dt) {
 
   const next = playerBody.translation();
   if (state.mode === 'race-active') updateRaceGameplay(dt);
-  if (!state.mode.startsWith('race') && (next.y < -8 || Math.abs(next.x) > 50 || Math.abs(next.z) > 50)) resetPlayer();
+  if (state.mode === 'free' && (next.y < -8 || Math.abs(next.x) > 50 || Math.abs(next.z) > 50)) resetPlayer();
 }
 
 const cameraTarget = new THREE.Vector3();
@@ -2075,9 +2313,11 @@ const desiredCamera = new THREE.Vector3();
 const cameraDirection = new THREE.Vector3();
 const raceCameraForward = new THREE.Vector3();
 const raceCameraUp = new THREE.Vector3(0, 1, 0);
+const worldCameraUp = new THREE.Vector3(0, 1, 0);
 const raceBallBasis = new THREE.Matrix4();
 const raceBallBaseQuaternion = new THREE.Quaternion();
 const raceBallRollQuaternion = new THREE.Quaternion();
+const driveVisualPosition = new THREE.Vector3();
 const smoothTarget = new THREE.Vector3(0, 1.3, 5.5);
 
 function updateVisuals(dt) {
@@ -2090,7 +2330,10 @@ function updateVisuals(dt) {
   canvas.dataset.jumpVelocity = raceMotor.jumpVelocity.toFixed(3);
   canvas.dataset.grounded = String(state.grounded);
   canvas.dataset.trackLoop = getRaceFrame(raceMotor.distance).loop || '';
-  if (state.mode.startsWith('race')) {
+  canvas.dataset.driveLane = String(driveMode.state.laneIndex);
+  canvas.dataset.driveDistance = driveMode.state.distance.toFixed(2);
+  canvas.dataset.driveShards = String(driveMode.state.shards);
+  if (isRaceMode()) {
     const frame = getRaceFrame(raceMotor.distance);
     makeRaceBasis(frame, raceBallBasis);
     raceBallBaseQuaternion.setFromRotationMatrix(raceBallBasis);
@@ -2130,11 +2373,21 @@ function updateVisuals(dt) {
     }
   }
 
-  sun.position.set(position.x, position.y, position.z).addScaledVector(sunDirection, 28);
-  sun.target.position.set(position.x, position.y, position.z);
+  const lightTarget = isDriveMode()
+    ? driveMode.getCarWorldPosition(driveVisualPosition)
+    : driveVisualPosition.set(position.x, position.y, position.z);
+  sun.position.copy(lightTarget).addScaledVector(sunDirection, 28);
+  sun.target.position.copy(lightTarget);
   sun.target.updateMatrixWorld();
 
-  if (state.mode.startsWith('race')) {
+  if (isDriveMode()) {
+    driveMode.getCameraPose(cameraTarget, desiredCamera);
+    camera.up.lerp(worldCameraUp, 1 - Math.exp(-dt * 12)).normalize();
+    smoothTarget.lerp(cameraTarget, 1 - Math.exp(-dt * 14));
+    const speedAmount = THREE.MathUtils.clamp((driveMode.state.speed - 30) / 34, 0, 1);
+    camera.fov = THREE.MathUtils.lerp(camera.fov, 44 + speedAmount * 8, 1 - Math.exp(-dt * 5));
+    camera.updateProjectionMatrix();
+  } else if (isRaceMode()) {
     const frame = getRaceFrame(raceMotor.distance);
     raceCameraForward.copy(frame.tangent);
     raceCameraUp.lerp(frame.up, 1 - Math.exp(-dt * 12)).normalize();
@@ -2150,7 +2403,7 @@ function updateVisuals(dt) {
     camera.fov = THREE.MathUtils.lerp(camera.fov, 40 + THREE.MathUtils.clamp((speed - 24) / 38, 0, 1) * 9, 1 - Math.exp(-dt * 5));
     camera.updateProjectionMatrix();
   } else {
-    camera.up.lerp(new THREE.Vector3(0, 1, 0), 1 - Math.exp(-dt * 10)).normalize();
+    camera.up.lerp(worldCameraUp, 1 - Math.exp(-dt * 10)).normalize();
     // Aim above the ball so it lives in the lower third and tall architecture remains visible.
     cameraTarget.set(position.x, position.y + 2.1, position.z);
     smoothTarget.lerp(cameraTarget, 1 - Math.exp(-dt * 11));
@@ -2168,7 +2421,7 @@ function updateVisuals(dt) {
   cameraDirection.copy(desiredCamera).sub(smoothTarget);
   const desiredDistance = cameraDirection.length();
   cameraDirection.normalize();
-  if (!state.mode.startsWith('race')) {
+  if (state.mode === 'free') {
     const cameraRay = new RAPIER.Ray(smoothTarget, cameraDirection);
     const cameraHit = world.castRay(cameraRay, desiredDistance, true, undefined, undefined, playerCollider, playerBody);
     if (cameraHit) desiredCamera.copy(smoothTarget).addScaledVector(cameraDirection, Math.max(1.4, cameraHit.timeOfImpact - 0.28));
@@ -2178,8 +2431,10 @@ function updateVisuals(dt) {
   camera.lookAt(smoothTarget);
 
   if (windGain && windFilter) {
-    const speed = state.mode.startsWith('race') ? raceMotor.speed : Math.hypot(playerBody.linvel().x, playerBody.linvel().z);
-    const active = state.mode === 'race-active';
+    const speed = isDriveMode()
+      ? driveMode.state.speed
+      : (isRaceMode() ? raceMotor.speed : Math.hypot(playerBody.linvel().x, playerBody.linvel().z));
+    const active = state.mode === 'race-active' || state.mode === 'drive-active';
     windGain.gain.setTargetAtTime(active ? THREE.MathUtils.clamp(speed / 60, 0.03, 0.25) : 0, audioContext.currentTime, 0.08);
     windFilter.frequency.setTargetAtTime(360 + speed * 24, audioContext.currentTime, 0.1);
   }
@@ -2235,7 +2490,7 @@ function render(dt = 1 / 60) {
   // Long-course coordinates eventually exceed the stable depth range of the
   // GTAO post target. Race Mode uses the native ACES/PBR path for a pristine,
   // fast image; the contained Free Mode still keeps desktop GTAO and grain.
-  if (isMobileDevice || state.mode.startsWith('race')) renderer.render(scene, camera);
+  if (isMobileDevice || isRunnerMode()) renderer.render(scene, camera);
   else composer.render(dt);
 }
 
@@ -2279,7 +2534,7 @@ window.render_game_to_text = () => {
   });
   const currentSection = raceSectionAtDistance(raceMotor.distance);
   return JSON.stringify({
-    coordinateSystem: 'Free Mode uses world Y-up physics; Race Mode uses a track-local frame that banks and rotates through two vertical loops',
+    coordinateSystem: 'Free Mode uses world Y-up physics; Race Mode uses a track-local looping frame; Drive Mode uses straight three-lane logic with view-space shader curvature',
     mode: state.mode,
     lastKey: state.lastKey,
     player: {
@@ -2290,7 +2545,7 @@ window.render_game_to_text = () => {
       jumpBuffer: +input.jumpBuffer.toFixed(3),
       jumpCount: state.jumpCount,
       airJumpCount: state.airJumpCount,
-      horizontalSpeed: +(state.mode.startsWith('race') ? raceMotor.speed : Math.hypot(v.x, v.z)).toFixed(2),
+      horizontalSpeed: +(isDriveMode() ? driveMode.state.speed : (isRaceMode() ? raceMotor.speed : Math.hypot(v.x, v.z))).toFixed(2),
     },
     camera: {
       yaw: +state.yaw.toFixed(2),
@@ -2334,10 +2589,13 @@ window.render_game_to_text = () => {
       shieldPops: race.shieldPops,
       coinCrashes: race.coinCrashes,
     },
-    performance: { fps: state.fps, mobileMode: isMobileDevice, pixelRatio: qualityRatio, antialiasSamples: isMobileDevice ? 0 : 4, shadowMap: isMobileDevice ? 1024 : 2048, reflectionMap: isMobileDevice ? 384 : 768, postProcessing: !isMobileDevice && !state.mode.startsWith('race'), gtaoEnabled: gtao.enabled && !state.mode.startsWith('race'), gtaoSamples: gtao.enabled && !state.mode.startsWith('race') ? gtaoSamples : 0 },
-    controls: state.mode.startsWith('race')
-      ? 'automatic high-speed forward roll, drag horizontally to steer, tap or Space to jump including in air, fixed chase camera, R reset to last checkpoint'
-      : (isMobileDevice ? 'automatic forward roll, one-finger horizontal slide steering, tap or upward swipe jump with repeatable air jumps, automatic camera, Reset button' : 'WASD/arrows roll, Space jump, drag look, R reset, F fullscreen'),
+    drive: driveMode.snapshot(),
+    performance: { fps: state.fps, mobileMode: isMobileDevice, pixelRatio: qualityRatio, antialiasSamples: isMobileDevice ? 0 : 4, shadowMap: isMobileDevice ? 1024 : 2048, reflectionMap: isMobileDevice ? 384 : 768, postProcessing: !isMobileDevice && !isRunnerMode(), gtaoEnabled: gtao.enabled && !isRunnerMode(), gtaoSamples: gtao.enabled && !isRunnerMode() ? gtaoSamples : 0 },
+    controls: isDriveMode()
+      ? 'automatic acceleration, three fixed lanes, A/D or Left/Right switch one lane, horizontal swipe switches one lane, R restart'
+      : (isRaceMode()
+        ? 'automatic high-speed forward roll, drag horizontally to steer, tap or Space to jump including in air, fixed chase camera, R reset to last checkpoint'
+        : (isMobileDevice ? 'automatic forward roll, one-finger horizontal slide steering, tap or upward swipe jump with repeatable air jumps, automatic camera, Reset button' : 'WASD/arrows roll, Space jump, drag look, R reset, F fullscreen')),
     pools: [
       { shape: 'rectangle', x: RECT_POOL.x, z: RECT_POOL.z, waterY: RECT_POOL.waterY },
       { shape: 'round', x: ROUND_POOL.x, z: ROUND_POOL.z, waterY: ROUND_POOL.waterY },
@@ -2346,12 +2604,16 @@ window.render_game_to_text = () => {
       const baseBlock = floatingWoodBlocks.find((block) => block.tower === name);
       return { name, species, x, z, blocks: count, currentBaseY: +baseBlock.body.translation().y.toFixed(2) };
     }),
-    environment: state.mode.startsWith('race')
-      ? { playerMaterial: 'rigid texture-free procedural PBR marble', sky: 'procedural stars and magenta nebula', terrain: 'ImprovedNoise track-following canyon', monuments: '7 colossal arches plus 14 concrete and glossy-metal walls', moon: 'synthetic cyan' }
-      : { playerMaterial: 'rigid texture-free procedural PBR marble', sky: 'procedural Preetham', sunElevation: skySettings.elevation, water: 'planar reflective', waves: 'three small geometric wave bands, max amplitude 0.046' },
-    landmarks: state.mode.startsWith('race')
-      ? [`start elevation ${raceTrackSamples[0].center.y.toFixed(0)}`, `${RACE_CHECKPOINT_DISTANCES.length} checkpoints divide ${COURSE_SECTIONS.length} paced sections`, `finish elevation ${raceTrackSamples.at(-1).center.y.toFixed(0)}`, `6500-unit banked half-pipe with strong S-turns and ${TRACK_LOOPS.length} complete vertical loops`, 'procedural canyon and seven monumental arches']
-      : ['gold arch at (0, -5)', 'rose/coral stairs near (-7, -5)', 'coral arch at (7, -12)'],
+    environment: isDriveMode()
+      ? { vehicle: 'procedural neon cyber coupe', road: 'clearcoated procedural wet asphalt with neon lane reflections', terrain: 'camera-centered ImprovedNoise FBM mesh', city: 'recycled procedural building pools', curvature: 'shared view-space parabolic vertex bend' }
+      : (isRaceMode()
+        ? { playerMaterial: 'rigid texture-free procedural PBR marble', sky: 'procedural stars and magenta nebula', terrain: 'ImprovedNoise track-following canyon', monuments: '7 colossal arches plus 14 concrete and glossy-metal walls', moon: 'synthetic cyan' }
+        : { playerMaterial: 'rigid texture-free procedural PBR marble', sky: 'procedural Preetham', sunElevation: skySettings.elevation, water: 'planar reflective', waves: 'three small geometric wave bands, max amplitude 0.046' }),
+    landmarks: isDriveMode()
+      ? ['three fixed neon lanes', 'striped synthetic sun', 'endless paired cyber towers', 'procedural mountain walls beyond the city']
+      : (isRaceMode()
+        ? [`start elevation ${raceTrackSamples[0].center.y.toFixed(0)}`, `${RACE_CHECKPOINT_DISTANCES.length} checkpoints divide ${COURSE_SECTIONS.length} paced sections`, `finish elevation ${raceTrackSamples.at(-1).center.y.toFixed(0)}`, `6500-unit banked half-pipe with strong S-turns and ${TRACK_LOOPS.length} complete vertical loops`, 'procedural canyon and seven monumental arches']
+        : ['gold arch at (0, -5)', 'rose/coral stairs near (-7, -5)', 'coral arch at (7, -12)']),
   });
 };
 
