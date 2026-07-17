@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { gsap } from 'gsap';
 import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
@@ -13,11 +14,17 @@ function smoothDamp(current, target, rate, dt) {
 }
 
 export class DriveMode {
-  constructor(scene, { isMobile = false, onCollect = () => {}, onCrash = () => {} } = {}) {
+  constructor(scene, {
+    isMobile = false,
+    onCollect = () => {},
+    onCrash = () => {},
+    prefersReducedMotion = () => false,
+  } = {}) {
     this.scene = scene;
     this.isMobile = isMobile;
     this.onCollect = onCollect;
     this.onCrash = onCrash;
+    this.prefersReducedMotion = prefersReducedMotion;
     this.noise = new ImprovedNoise();
     this.randomState = 0x5f3759df;
     this.terrainAccumulator = 0;
@@ -45,6 +52,13 @@ export class DriveMode {
       uBendY: { value: 0.00128 },
       uDriveOriginX: { value: DRIVE_ORIGIN_X },
     };
+    this.motionPhase = { shard: 0 };
+    this.shardPhaseTween = gsap.to(this.motionPhase, {
+      shard: Math.PI * 2,
+      duration: 1.65,
+      ease: 'none',
+      repeat: -1,
+    });
 
     this.root = new THREE.Group();
     this.root.name = 'Drive Mode · Neon City';
@@ -400,12 +414,14 @@ export class DriveMode {
   }
 
   recycleRunnerObject(object, z) {
+    gsap.killTweensOf(object.shard.scale);
     object.kind = this.random() < 0.46 ? 'barrier' : 'shard';
     object.lane = Math.floor(this.random() * 3);
     object.z = z;
     object.resolved = false;
     object.barrier.visible = object.kind === 'barrier';
     object.shard.visible = object.kind === 'shard';
+    object.shard.scale.setScalar(1);
     object.barrier.position.set(LANE_X[object.lane], 0.62, z);
     object.shard.position.set(LANE_X[object.lane], 1.05, z);
   }
@@ -415,6 +431,13 @@ export class DriveMode {
     this.car.name = 'Neon Cyber Runner';
     this.car.position.set(0, 0.06, CAR_Z);
     this.root.add(this.car);
+
+    this.carMotionRig = new THREE.Group();
+    this.carMotionRig.name = 'GSAP lane and hover presentation';
+    this.carImpactRig = new THREE.Group();
+    this.carImpactRig.name = 'GSAP impact presentation';
+    this.car.add(this.carMotionRig);
+    this.carMotionRig.add(this.carImpactRig);
 
     const paint = new THREE.MeshPhysicalMaterial({
       color: '#09071d', metalness: 0.46, roughness: 0.24,
@@ -437,35 +460,48 @@ export class DriveMode {
     const cabin = new THREE.Mesh(new RoundedBoxGeometry(2.62, 0.84, 2.15, 5, 0.2), glass);
     cabin.position.set(0, 1.23, 0.2);
     cabin.scale.set(0.92, 1, 0.95);
-    this.car.add(lower, hood, cabin);
+    this.carImpactRig.add(lower, hood, cabin);
 
     for (const side of [-1, 1]) {
       for (const z of [-1.45, 1.45]) {
         const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.48, 0.34, 18), tire);
         wheel.rotation.z = Math.PI / 2;
         wheel.position.set(side * 1.72, 0.38, z);
-        this.car.add(wheel);
+        this.carImpactRig.add(wheel);
       }
       const tail = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.22, 0.08), red);
       tail.position.set(side * 0.95, 0.72, 2.57);
-      this.car.add(tail);
+      this.carImpactRig.add(tail);
       const sideStrip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.08, 3.9), side < 0 ? cyan : magenta);
       sideStrip.position.set(side * 1.72, 0.55, 0.1);
-      this.car.add(sideStrip);
+      this.carImpactRig.add(sideStrip);
     }
     const rearStrip = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.07, 0.08), magenta);
     rearStrip.position.set(0, 0.92, 2.59);
-    this.car.add(rearStrip);
+    this.carImpactRig.add(rearStrip);
     const underglow = new THREE.Mesh(new THREE.PlaneGeometry(3.1, 4.5), new THREE.MeshBasicMaterial({
       color: '#ff0e8d', transparent: true, opacity: 0.26, blending: THREE.AdditiveBlending,
       depthWrite: false, toneMapped: false,
     }));
     underglow.rotation.x = -Math.PI / 2;
     underglow.position.y = 0.01;
-    this.car.add(underglow);
+    this.carImpactRig.add(underglow);
+    this.underglow = underglow;
     const spoiler = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.12, 0.36), paint);
     spoiler.position.set(0, 1.25, 2.15);
-    this.car.add(spoiler);
+    this.carImpactRig.add(spoiler);
+
+    const hoverAmount = this.prefersReducedMotion() ? 0 : 0.022;
+    this.carIdleTimeline = gsap.timeline({ repeat: -1, yoyo: true });
+    this.carIdleTimeline.to(this.carMotionRig.position, {
+      y: hoverAmount,
+      duration: 0.28,
+      ease: 'sine.inOut',
+    }).to(this.underglow.material, {
+      opacity: this.prefersReducedMotion() ? 0.26 : 0.38,
+      duration: 0.28,
+      ease: 'sine.inOut',
+    }, 0);
   }
 
   createLights() {
@@ -485,6 +521,23 @@ export class DriveMode {
     });
     this.car.position.set(0, 0.06, CAR_Z);
     this.car.rotation.set(0, 0, 0);
+    this.laneTimeline?.kill();
+    this.impactTimeline?.kill();
+    this.carIdleTimeline.pause(0);
+    gsap.killTweensOf([
+      this.carMotionRig.rotation,
+      this.carImpactRig.position,
+      this.carImpactRig.rotation,
+      this.carImpactRig.scale,
+    ]);
+    this.carMotionRig.position.set(0, 0, 0);
+    this.carMotionRig.rotation.set(0, 0, 0);
+    this.carImpactRig.position.set(0, 0, 0);
+    this.carImpactRig.rotation.set(0, 0, 0);
+    this.carImpactRig.scale.setScalar(1);
+    this.underglow.material.opacity = 0.26;
+    this.carIdleTimeline.restart();
+    this.carIdleTimeline.paused(!this.root.visible);
     this.buildings.forEach((building, index) => this.recycleBuilding(building, -18 - index * (this.isMobile ? 10 : 7.2)));
     this.runnerObjects.forEach((object, index) => this.recycleRunnerObject(object, -34 - index * 19));
     this.bendUniforms.uDriveTravel.value = 0;
@@ -494,6 +547,7 @@ export class DriveMode {
 
   setVisible(visible) {
     this.root.visible = visible;
+    this.carIdleTimeline?.paused(!visible);
   }
 
   shiftLane(direction) {
@@ -502,7 +556,65 @@ export class DriveMode {
     if (next === this.state.targetLane) return false;
     this.state.targetLane = next;
     this.state.laneChanges += 1;
+    this.animateLaneChange(Math.sign(direction));
     return true;
+  }
+
+  animateLaneChange(direction) {
+    this.laneTimeline?.kill();
+    gsap.killTweensOf(this.carMotionRig.rotation);
+    const tilt = this.prefersReducedMotion() ? 0 : direction;
+    this.laneTimeline = gsap.timeline({ defaults: { overwrite: 'auto' } });
+    this.laneTimeline.to(this.carMotionRig.rotation, {
+      z: -tilt * 0.12,
+      y: -tilt * 0.065,
+      duration: 0.1,
+      ease: 'power2.out',
+    }).to(this.carMotionRig.rotation, {
+      z: 0,
+      y: 0,
+      duration: 0.27,
+      ease: 'back.out(1.8)',
+    });
+  }
+
+  animateShardCollect(object) {
+    const shard = object.shard;
+    gsap.killTweensOf(shard.scale);
+    gsap.timeline()
+      .to(shard.scale, {
+        x: this.prefersReducedMotion() ? 1 : 1.7,
+        y: this.prefersReducedMotion() ? 1 : 1.7,
+        z: this.prefersReducedMotion() ? 1 : 1.7,
+        duration: 0.1,
+        ease: 'power3.out',
+      })
+      .to(shard.scale, {
+        x: 0,
+        y: 0,
+        z: 0,
+        duration: 0.16,
+        ease: 'power2.in',
+        onComplete: () => {
+          if (object.resolved && object.kind === 'shard') shard.visible = false;
+        },
+      });
+  }
+
+  animateCrash() {
+    this.laneTimeline?.kill();
+    this.impactTimeline?.kill();
+    this.carIdleTimeline.pause();
+    gsap.killTweensOf([this.carMotionRig.rotation, this.carImpactRig.position, this.carImpactRig.rotation, this.carImpactRig.scale]);
+    const amount = this.prefersReducedMotion() ? 0.2 : 1;
+    this.impactTimeline = gsap.timeline({ defaults: { overwrite: 'auto' } });
+    this.impactTimeline
+      .to(this.carImpactRig.position, { z: 0.45 * amount, y: -0.08 * amount, duration: 0.08, ease: 'power3.out' }, 0)
+      .to(this.carImpactRig.rotation, { y: -0.2 * amount, z: 0.13 * amount, x: 0.04 * amount, duration: 0.09, ease: 'power3.out' }, 0)
+      .to(this.carImpactRig.scale, { x: 1.08, y: 0.82, z: 1.05, duration: 0.09, ease: 'power3.out' }, 0)
+      .to(this.carImpactRig.position, { z: 0, y: 0, duration: 0.34, ease: 'elastic.out(1, 0.42)' })
+      .to(this.carImpactRig.rotation, { x: 0, y: 0, z: 0, duration: 0.38, ease: 'elastic.out(1, 0.42)' }, '<')
+      .to(this.carImpactRig.scale, { x: 1, y: 1, z: 1, duration: 0.34, ease: 'elastic.out(1, 0.42)' }, '<');
   }
 
   start() {
@@ -513,10 +625,7 @@ export class DriveMode {
   update(dt, active) {
     this.bendUniforms.uDriveTime.value += dt;
     this.terrainAccumulator += dt;
-    if (!active || this.state.crashed) {
-      this.car.position.y = 0.06 + Math.sin(this.bendUniforms.uDriveTime.value * 2.2) * 0.012;
-      return;
-    }
+    if (!active || this.state.crashed) return;
 
     this.state.elapsed += dt;
     this.state.speed = Math.min(62, this.state.speed + dt * 0.72);
@@ -524,14 +633,9 @@ export class DriveMode {
     this.state.distance += advance;
     this.state.score = Math.floor(this.state.distance * 2 + this.state.shards * 125);
     const targetX = LANE_X[this.state.targetLane];
-    const previousX = this.state.lateralX;
     this.state.lateralX = smoothDamp(this.state.lateralX, targetX, 11.5, dt);
-    const lateralVelocity = (this.state.lateralX - previousX) / Math.max(dt, 0.0001);
     this.car.position.x = this.state.lateralX;
     if (Math.abs(this.state.lateralX - targetX) < 0.08) this.state.laneIndex = this.state.targetLane;
-    this.car.position.y = 0.06 + Math.sin(this.state.elapsed * 7.5) * 0.012;
-    this.car.rotation.z = smoothDamp(this.car.rotation.z, -lateralVelocity * 0.012, 9, dt);
-    this.car.rotation.y = smoothDamp(this.car.rotation.y, -lateralVelocity * 0.006, 8, dt);
 
     this.bendUniforms.uDriveTravel.value = this.state.distance;
     this.bendUniforms.uBendX.value = Math.sin(this.state.distance * 0.0042) * 0.00031 + Math.sin(this.state.distance * 0.0013 + 1.4) * 0.00011;
@@ -554,9 +658,10 @@ export class DriveMode {
       object.barrier.position.z = object.z;
       object.shard.position.z = object.z;
       if (object.kind === 'shard') {
-        object.shard.rotation.y += dt * 3.8;
-        object.shard.rotation.x += dt * 1.4;
-        object.shard.position.y = 1.05 + Math.sin(this.state.elapsed * 4 + object.z) * 0.12;
+        const phase = this.motionPhase.shard + object.z * 0.07;
+        object.shard.rotation.y = phase;
+        object.shard.rotation.x = phase * 0.37;
+        object.shard.position.y = 1.05 + Math.sin(phase * 1.3) * (this.prefersReducedMotion() ? 0 : 0.12);
       }
       if (!object.resolved) {
         const longitudinalDistance = Math.abs(object.z - CAR_Z);
@@ -564,12 +669,13 @@ export class DriveMode {
         if (object.kind === 'shard' && longitudinalDistance < 1.8 && lateralDistance < 1.85) {
           object.resolved = true;
           this.state.shards += 1;
-          object.shard.visible = false;
+          this.animateShardCollect(object);
           this.onCollect(this.state);
         } else if (object.kind === 'barrier' && longitudinalDistance < 2.9 && lateralDistance < 2.66) {
           object.resolved = true;
           this.state.crashed = true;
           this.state.speed = 0;
+          this.animateCrash();
           this.onCrash(this.state);
         } else if (object.z > CAR_Z + 3.1) {
           object.resolved = true;

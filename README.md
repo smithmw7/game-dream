@@ -18,6 +18,7 @@ See the [best-in-class product and technical roadmap](./ROADMAP.md).
 - Thirteen authored pacing sections, twelve checkpoints, strong S-turns, changing banks, rollers, two complete vertical loops, and a finish line
 - 452 collectible coins, 71 coin-clearing hazards, and six single-hit shield powerups
 - Race HUD, countdown, speed meter, finish summary, and persistent best-time/coin records
+- GSAP-authored panel, HUD, countdown, toast, touch, pickup, lane-change, and impact motion with reduced-motion support
 - Procedural Web Audio feedback, speed-reactive wind, and supported-device haptics
 - Deterministic arcade handling with section-specific speed targets, crisp lane steering, strong jump gravity, stable zero-bounce landings, and rapid recovery
 - High-contrast procedural PBR track surfacing with navy road grit, cyan edge ribbons, magenta hazards, and texture-free cloud shelves
@@ -65,5 +66,6 @@ npm run build
 ## Technology
 
 - [Three.js](https://threejs.org/)
+- [GSAP](https://gsap.com/)
 - [Rapier](https://rapier.rs/)
 - [Vite](https://vite.dev/)

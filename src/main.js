@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { gsap } from 'gsap';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { Water } from 'three/addons/objects/Water.js';
@@ -11,7 +12,12 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { DriveMode } from './DriveMode.js';
+import { MotionDirector } from './MotionDirector.js';
 import './style.css';
+
+// GSAP is the single animation scheduler. Its ticker drives the game loop, and
+// window.advanceTime also advances authored presentation for deterministic QA.
+gsap.ticker.remove(gsap.updateRoot);
 
 await RAPIER.init({});
 
@@ -80,6 +86,20 @@ document.body.classList.toggle('is-mobile', isMobileDevice);
 if (isMobileDevice) {
   touchHint.textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
 }
+
+const motion = new MotionDirector({
+  panels: [splash, raceBriefing, finishPanel, driveBriefing, driveFinishPanel],
+  huds: [raceHud, driveHud],
+  countdown,
+  countdownValue,
+  toast: raceToast,
+  touchJoystick,
+  touchStick,
+  speedBars: [speedFill, driveSpeedFill],
+  buttons: document.querySelectorAll('button'),
+  debug: debugRaceQuery,
+});
+motion.setPanel(splash, { intro: true });
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog('#9fc4ca', 70, 190);
@@ -1138,6 +1158,10 @@ addRaceGate(2);
 RACE_CHECKPOINT_DISTANCES.forEach((distance) => addRaceGate(distance));
 addRaceGate(RACE_LENGTH - 2, true);
 
+const raceMotionPhase = { coin: 0, shield: 0 };
+gsap.to(raceMotionPhase, { coin: Math.PI * 2, duration: 1.08, ease: 'none', repeat: -1 });
+gsap.to(raceMotionPhase, { shield: Math.PI * 2, duration: 2.25, ease: 'none', repeat: -1 });
+
 const raceCoins = [];
 const coinGeometry = new THREE.TorusGeometry(0.32, 0.105, 10, 24);
 const coinMaterial = new THREE.MeshPhysicalMaterial({ color: '#ffd659', emissive: '#b95d12', emissiveIntensity: 0.42, roughness: 0.22, metalness: 0.46, clearcoat: 0.8, clearcoatRoughness: 0.12 });
@@ -1177,6 +1201,7 @@ function addRaceCoin(localX, distance, lift = 0.92) {
     distance,
     lift,
     phase: raceCoins.length * 0.37,
+    visualScale: 1,
   });
 }
 
@@ -1200,6 +1225,7 @@ const raceCoinMesh = new THREE.InstancedMesh(coinGeometry, coinMaterial, raceCoi
 raceCoinMesh.castShadow = true;
 raceCoinMesh.frustumCulled = false;
 raceGroup.add(raceCoinMesh);
+const animatingRaceCoins = new Set();
 
 function setRaceCoinInstance(coin, index, spin = 0) {
   const frame = getRaceFrame(coin.distance);
@@ -1207,7 +1233,7 @@ function setRaceCoinInstance(coin, index, spin = 0) {
   raceObjectQuaternion.setFromRotationMatrix(basis);
   const spinQuaternion = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), spin + coin.phase);
   raceObjectQuaternion.multiply(spinQuaternion);
-  raceObjectScale.setScalar(coin.collected ? 0 : 1);
+  raceObjectScale.setScalar(coin.visualScale);
   raceObjectMatrix.compose(coin.position, raceObjectQuaternion, raceObjectScale);
   raceCoinMesh.setMatrixAt(index, raceObjectMatrix);
 }
@@ -1263,6 +1289,8 @@ raceGroup.add(raceObstacleMesh);
 
 const shieldMaterial = new THREE.MeshPhysicalMaterial({ color: '#7feaf5', emissive: '#147a9b', emissiveIntensity: 0.8, roughness: 0.12, metalness: 0.05, clearcoat: 1, clearcoatRoughness: 0.08, transmission: 0.15, thickness: 0.5 });
 const raceShields = [];
+const shieldSpinAxis = new THREE.Vector3(0, 1, 0);
+const shieldSpinQuaternion = new THREE.Quaternion();
 for (const shield of [
   { x: 3.4, distance: 1080 }, { x: -3.4, distance: 2025 }, { x: 0, distance: 3160 },
   { x: -3.2, distance: 4015 }, { x: 3.2, distance: 4775 }, { x: 0, distance: 5750 },
@@ -1273,7 +1301,13 @@ for (const shield of [
   mesh.position.copy(racePointAt(shield.distance, shield.x, 1.05, new THREE.Vector3()));
   mesh.castShadow = true;
   raceGroup.add(mesh);
-  raceShields.push({ ...shield, basePosition: mesh.position.clone(), mesh, collected: false });
+  raceShields.push({
+    ...shield,
+    basePosition: mesh.position.clone(),
+    baseQuaternion: mesh.quaternion.clone(),
+    mesh,
+    collected: false,
+  });
 }
 
 // Paired hoops announce each pacing beat before its mechanics arrive.
@@ -1424,6 +1458,7 @@ const driveMode = new DriveMode(scene, {
   isMobile: isMobileDevice,
   onCollect: () => handleDriveCollect(),
   onCrash: () => finishDrive(),
+  prefersReducedMotion: () => motion.reducedMotion,
 });
 const keyMap = {
   KeyW: 'forward', ArrowUp: 'forward', KeyS: 'back', ArrowDown: 'back',
@@ -1502,25 +1537,33 @@ function isRunnerMode() {
 }
 
 function setPanel(panel) {
-  for (const item of [splash, raceBriefing, finishPanel, driveBriefing, driveFinishPanel]) item.classList.toggle('is-hidden', item !== panel);
+  motion.setPanel(panel);
 }
 
 function showToast(message, duration = 1.25) {
-  raceToast.textContent = message;
-  raceToast.classList.add('is-visible');
+  motion.showToast(message, duration);
   race.toastTimer = duration;
 }
 
 function applyModeLook(profile = 'free') {
   const racing = profile === true || profile === 'race';
   const driving = profile === 'drive';
-  renderer.toneMappingExposure = driving ? 0.66 : (racing ? 0.54 : 0.72);
-  scene.environmentIntensity = driving ? 0.38 : (racing ? 0.22 : 0.58);
-  scene.fog.color.set(driving ? '#070817' : (racing ? '#091027' : '#9fc4ca'));
-  scene.fog.near = driving ? 58 : (racing ? 105 : 70);
-  scene.fog.far = driving ? 255 : (racing ? 330 : 190);
-  sun.color.set(driving ? '#a17cff' : (racing ? '#8adfff' : '#ffd2a0'));
-  sun.intensity = driving ? 0.38 : (racing ? 0.62 : 3.8);
+  const look = {
+    exposure: driving ? 0.66 : (racing ? 0.54 : 0.72),
+    environment: driving ? 0.38 : (racing ? 0.22 : 0.58),
+    fog: new THREE.Color(driving ? '#070817' : (racing ? '#091027' : '#9fc4ca')),
+    fogNear: driving ? 58 : (racing ? 105 : 70),
+    fogFar: driving ? 255 : (racing ? 330 : 190),
+    sun: new THREE.Color(driving ? '#a17cff' : (racing ? '#8adfff' : '#ffd2a0')),
+    sunIntensity: driving ? 0.38 : (racing ? 0.62 : 3.8),
+  };
+  const duration = motion.time(0.58);
+  gsap.to(renderer, { toneMappingExposure: look.exposure, duration, ease: 'power2.inOut', overwrite: 'auto' });
+  gsap.to(scene, { environmentIntensity: look.environment, duration, ease: 'power2.inOut', overwrite: 'auto' });
+  gsap.to(scene.fog, { near: look.fogNear, far: look.fogFar, duration, ease: 'power2.inOut', overwrite: 'auto' });
+  gsap.to(scene.fog.color, { r: look.fog.r, g: look.fog.g, b: look.fog.b, duration, ease: 'power2.inOut', overwrite: 'auto' });
+  gsap.to(sun, { intensity: look.sunIntensity, duration, ease: 'power2.inOut', overwrite: 'auto' });
+  gsap.to(sun.color, { r: look.sun.r, g: look.sun.g, b: look.sun.b, duration, ease: 'power2.inOut', overwrite: 'auto' });
   raceSkyDome.visible = racing;
   raceMoon.visible = racing;
   sky.visible = !racing && !driving;
@@ -1625,9 +1668,8 @@ function showSplash() {
   raceGroup.visible = false;
   driveMode.setVisible(false);
   ball.visible = true;
-  raceHud.classList.add('is-hidden');
-  driveHud.classList.add('is-hidden');
-  countdown.classList.add('is-hidden');
+  motion.hideAllHuds();
+  motion.hideCountdown();
   touchHint.textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
   applyModeLook('free');
   setPanel(splash);
@@ -1642,9 +1684,8 @@ function startFreeMode() {
   raceGroup.visible = false;
   driveMode.setVisible(false);
   ball.visible = true;
-  raceHud.classList.add('is-hidden');
-  driveHud.classList.add('is-hidden');
-  countdown.classList.add('is-hidden');
+  motion.hideAllHuds();
+  motion.hideCountdown();
   touchHint.textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
   applyModeLook('free');
   setPanel(null);
@@ -1660,9 +1701,8 @@ function showRaceBriefing() {
   raceGroup.visible = true;
   driveMode.setVisible(false);
   ball.visible = true;
-  raceHud.classList.add('is-hidden');
-  driveHud.classList.add('is-hidden');
-  countdown.classList.add('is-hidden');
+  motion.hideAllHuds();
+  motion.hideCountdown();
   touchHint.textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
   applyModeLook('race');
   refreshRecordUI();
@@ -1676,13 +1716,18 @@ function showRaceBriefing() {
 function resetRaceObjects() {
   for (let index = 0; index < raceCoins.length; index++) {
     const coin = raceCoins[index];
+    gsap.killTweensOf(coin);
     coin.collected = false;
+    coin.visualScale = 1;
     setRaceCoinInstance(coin, index);
   }
+  animatingRaceCoins.clear();
   raceCoinMesh.instanceMatrix.needsUpdate = true;
   for (const shield of raceShields) {
+    gsap.killTweensOf(shield.mesh.scale);
     shield.collected = false;
     shield.mesh.visible = true;
+    shield.mesh.scale.setScalar(1);
   }
 }
 
@@ -1707,12 +1752,11 @@ function startRace() {
   raceGroup.visible = true;
   driveMode.setVisible(false);
   ball.visible = true;
-  driveHud.classList.add('is-hidden');
+  motion.hideHud(driveHud, { immediate: true });
   applyModeLook('race');
   setPanel(null);
-  raceHud.classList.remove('is-hidden');
-  countdown.classList.remove('is-hidden');
-  countdownValue.textContent = '3';
+  motion.showHud(raceHud);
+  motion.showCountdown('3');
   setRaceBodyMode(true);
   placeRacePlayer();
   snapRaceCamera();
@@ -1735,9 +1779,8 @@ function showDriveBriefing() {
   driveMode.setVisible(true);
   driveMode.reset();
   ball.visible = false;
-  raceHud.classList.add('is-hidden');
-  driveHud.classList.add('is-hidden');
-  countdown.classList.add('is-hidden');
+  motion.hideAllHuds();
+  motion.hideCountdown();
   touchHint.textContent = 'SWIPE LEFT / RIGHT · THREE LANES';
   applyModeLook('drive');
   refreshDriveRecordUI();
@@ -1757,10 +1800,9 @@ function startDrive() {
   raceGroup.visible = false;
   driveMode.setVisible(true);
   ball.visible = false;
-  raceHud.classList.add('is-hidden');
-  driveHud.classList.remove('is-hidden');
-  countdown.classList.remove('is-hidden');
-  countdownValue.textContent = '3';
+  motion.hideHud(raceHud, { immediate: true });
+  motion.showHud(driveHud);
+  motion.showCountdown('3');
   touchHint.textContent = 'SWIPE LEFT / RIGHT · THREE LANES';
   applyModeLook('drive');
   setPanel(null);
@@ -1784,6 +1826,7 @@ function writeDriveRecords() {
 
 function handleDriveCollect() {
   showToast('DATA SHARD +1', 0.8);
+  motion.pulse(driveHudShards, { strength: 1.32, color: 'brightness(1.7) saturate(1.45)' });
   playTone(680 + (driveMode.state.shards % 4) * 90, 0.08, 'triangle', 0.08);
   haptic(8);
   updateDriveHud();
@@ -1804,8 +1847,8 @@ function finishDrive() {
   driveFinishDistance.textContent = `${Math.floor(distance)} m`;
   driveFinishShards.textContent = String(shards);
   driveFinishRecord.textContent = newDistanceRecord ? 'NEW DISTANCE RECORD' : (newShardRecord ? 'NEW SHARD RECORD' : 'RUN SAVED');
-  driveHud.classList.add('is-hidden');
-  countdown.classList.add('is-hidden');
+  motion.hideHud(driveHud);
+  motion.hideCountdown();
   setPanel(driveFinishPanel);
   showToast('IMPACT · SIGNAL LOST', 1.4);
   playTone(92, 0.4, 'sawtooth', 0.14);
@@ -1827,8 +1870,8 @@ function finishRace() {
   finishTime.textContent = formatTime(race.elapsed);
   finishCoins.textContent = `${race.coins} / ${raceCoins.length}`;
   finishRecord.textContent = newBestTime ? 'NEW PERSONAL BEST' : (newBestCoins ? 'NEW COIN RECORD' : 'RUN SAVED');
-  raceHud.classList.add('is-hidden');
-  countdown.classList.add('is-hidden');
+  motion.hideHud(raceHud);
+  motion.hideCountdown();
   setPanel(finishPanel);
   showToast('FINISH!');
   playTone(523, 0.32, 'triangle', 0.16);
@@ -1843,6 +1886,7 @@ addEventListener('keydown', (event) => {
     const direction = event.code === 'ArrowLeft' || event.code === 'KeyA' ? -1 : 1;
     if (driveMode.shiftLane(direction)) {
       playTone(direction < 0 ? 250 : 310, 0.055, 'square', 0.035);
+      motion.pulse(driveHudLane, { strength: 1.18 });
       updateDriveHud();
     }
     event.preventDefault();
@@ -1909,7 +1953,7 @@ function maybeTriggerTouchJump(clientX, clientY) {
   if (swipeY > -48 || Math.abs(swipeY) < Math.abs(swipeX) * 0.72) return;
   touchControl.jumpTriggered = true;
   performTouchJump();
-  touchJoystick.classList.add('did-jump');
+  motion.flashTouchJump();
 }
 
 function endTouchPointer(event) {
@@ -1918,13 +1962,12 @@ function endTouchPointer(event) {
     const swipeX = event.clientX - touchControl.originX;
     const swipeY = event.clientY - touchControl.originY;
     if (!touchControl.swipeCommitted && Math.abs(swipeX) > 34 && Math.abs(swipeX) > Math.abs(swipeY) * 1.15) {
-      driveMode.shiftLane(Math.sign(swipeX));
+      if (driveMode.shiftLane(Math.sign(swipeX))) motion.pulse(driveHudLane, { strength: 1.18 });
       touchControl.swipeCommitted = true;
     }
     touchControl.id = null;
     input.touchX = 0;
-    touchStick.style.transform = 'translateX(0px)';
-    touchJoystick.classList.remove('is-active', 'did-jump');
+    motion.hideTouchJoystick();
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
     updateDriveHud();
     return;
@@ -1937,8 +1980,7 @@ function endTouchPointer(event) {
   }
   touchControl.id = null;
   input.touchX = 0;
-  touchStick.style.transform = 'translateX(0px)';
-  touchJoystick.classList.remove('is-active', 'did-jump');
+  motion.hideTouchJoystick();
   if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
 }
 
@@ -1960,9 +2002,10 @@ canvas.addEventListener('pointerdown', (event) => {
     touchControl.maxDistance = 0;
     touchControl.jumpTriggered = false;
     touchControl.swipeCommitted = false;
-    touchJoystick.style.left = `${THREE.MathUtils.clamp(event.clientX, 88, innerWidth - 88)}px`;
-    touchJoystick.style.top = `${THREE.MathUtils.clamp(event.clientY, 46, innerHeight - 46)}px`;
-    touchJoystick.classList.add('is-active');
+    motion.showTouchJoystick(
+      THREE.MathUtils.clamp(event.clientX, 88, innerWidth - 88),
+      THREE.MathUtils.clamp(event.clientY, 46, innerHeight - 46),
+    );
     return;
   }
   state.dragging = true;
@@ -1985,11 +2028,12 @@ canvas.addEventListener('pointermove', (event) => {
     const totalY = event.clientY - touchControl.originY;
     const dx = THREE.MathUtils.clamp(totalX, -64, 64);
     touchControl.maxDistance = Math.max(touchControl.maxDistance, Math.hypot(totalX, totalY));
-    touchStick.style.transform = `translateX(${dx}px)`;
+    motion.moveTouchStick(dx);
     if (!touchControl.swipeCommitted && Math.abs(totalX) > 36 && Math.abs(totalX) > Math.abs(totalY) * 1.15) {
       if (driveMode.shiftLane(Math.sign(totalX))) {
         playTone(totalX < 0 ? 250 : 310, 0.055, 'square', 0.035);
         haptic(7);
+        motion.pulse(driveHudLane, { strength: 1.18 });
       }
       touchControl.swipeCommitted = true;
       updateDriveHud();
@@ -2002,7 +2046,7 @@ canvas.addEventListener('pointermove', (event) => {
     const dx = THREE.MathUtils.clamp(event.clientX - touchControl.originX, -64, 64);
     touchControl.maxDistance = Math.max(touchControl.maxDistance, Math.hypot(event.clientX - touchControl.originX, event.clientY - touchControl.originY));
     input.touchX = dx / 64;
-    touchStick.style.transform = `translateX(${dx}px)`;
+    motion.moveTouchStick(dx);
     maybeTriggerTouchJump(event.clientX, event.clientY);
     return;
   }
@@ -2100,8 +2144,8 @@ function updateRaceHud() {
   hudCoins.textContent = String(race.coins);
   hudCheckpoint.textContent = `${race.checkpointIndex} / ${RACE_CHECKPOINT_DISTANCES.length}`;
   hudSection.textContent = section.name.toUpperCase();
-  hudShield.classList.toggle('is-active', race.shield);
-  speedFill.style.width = `${THREE.MathUtils.clamp(raceMotor.speed / 64, 0, 1) * 100}%`;
+  motion.setShield(hudShield, race.shield);
+  motion.setSpeed(speedFill, raceMotor.speed / 64);
 }
 
 function updateDriveHud() {
@@ -2109,15 +2153,32 @@ function updateDriveHud() {
   driveHudShards.textContent = String(driveMode.state.shards);
   driveHudLane.textContent = `${driveMode.state.targetLane + 1} / 3`;
   driveHudSpeed.textContent = `${Math.round(driveMode.state.speed * 4.2)} KM/H`;
-  driveSpeedFill.style.width = `${THREE.MathUtils.clamp(driveMode.state.speed / 62, 0, 1) * 100}%`;
+  motion.setSpeed(driveSpeedFill, driveMode.state.speed / 62);
 }
 
 function collectCoin(coin) {
   coin.collected = true;
   const index = raceCoins.indexOf(coin);
-  setRaceCoinInstance(coin, index);
-  raceCoinMesh.instanceMatrix.needsUpdate = true;
+  animatingRaceCoins.add(index);
+  gsap.killTweensOf(coin);
+  gsap.to(coin, {
+    visualScale: motion.reducedMotion ? 0 : 1.75,
+    duration: motion.time(0.08),
+    ease: 'power3.out',
+    overwrite: 'auto',
+    onComplete: () => gsap.to(coin, {
+      visualScale: 0,
+      duration: motion.time(0.16),
+      ease: 'power2.in',
+      onComplete: () => {
+        animatingRaceCoins.delete(index);
+        setRaceCoinInstance(coin, index, raceMotionPhase.coin);
+        raceCoinMesh.instanceMatrix.needsUpdate = true;
+      },
+    }),
+  });
   race.coins += 1;
+  motion.pulse(hudCoins, { strength: 1.28 });
   const pitch = 720 + (race.coins % 6) * 55;
   playTone(pitch, 0.07, 'sine', 0.07);
   haptic(7);
@@ -2135,12 +2196,14 @@ function hitObstacle() {
     playTone(190, 0.22, 'sawtooth', 0.11);
     playTone(580, 0.12, 'square', 0.07, 0.06);
     haptic([35, 18, 55]);
+    motion.pulse(raceHud, { strength: 1.025, color: 'brightness(1.5) saturate(1.45)' });
   } else {
     race.coinCrashes += 1;
     race.coins = 0;
     showToast('CRASH! · COINS LOST');
     playTone(120, 0.34, 'sawtooth', 0.14);
     haptic([75, 30, 80]);
+    motion.pulse(raceHud, { strength: 0.97, color: 'brightness(1.25) saturate(1.7)' });
   }
 }
 
@@ -2155,9 +2218,28 @@ function updateRaceGameplay(dt) {
   for (const shield of raceShields) {
     if (shield.collected || Math.abs(raceMotor.distance - shield.distance) > 1.5 || Math.abs(raceMotor.lateral - shield.x) > 1.05 || raceMotor.jumpHeight > 1.4) continue;
     shield.collected = true;
-    shield.mesh.visible = false;
+    gsap.killTweensOf(shield.mesh.scale);
+    gsap.timeline()
+      .to(shield.mesh.scale, {
+        x: motion.reducedMotion ? 1 : 1.7,
+        y: motion.reducedMotion ? 1 : 1.7,
+        z: motion.reducedMotion ? 1 : 1.7,
+        duration: motion.time(0.1),
+        ease: 'power3.out',
+      })
+      .to(shield.mesh.scale, {
+        x: 0,
+        y: 0,
+        z: 0,
+        duration: motion.time(0.18),
+        ease: 'power2.in',
+        onComplete: () => {
+          if (shield.collected) shield.mesh.visible = false;
+        },
+      });
     race.shield = true;
     race.shieldPickups += 1;
+    motion.pulse(hudShield, { strength: 1.18, color: 'brightness(1.7) saturate(1.4)' });
     showToast('SHIELD READY');
     playTone(520, 0.14, 'triangle', 0.11);
     playTone(880, 0.2, 'sine', 0.08, 0.07);
@@ -2189,6 +2271,7 @@ function updateRaceGameplay(dt) {
 const moveDirection = new THREE.Vector3();
 const forward = new THREE.Vector3();
 const right = new THREE.Vector3();
+let motionClock = 0;
 
 function fixedUpdate(dt) {
   state.elapsed += dt;
@@ -2211,11 +2294,11 @@ function fixedUpdate(dt) {
   if (state.mode === 'race-countdown') {
     race.countdown -= dt;
     const number = Math.max(1, Math.ceil(race.countdown));
-    countdownValue.textContent = String(number);
+    motion.setCountdownDigit(number);
     placeRacePlayer();
     if (race.countdown <= 0) {
       state.mode = 'race-active';
-      countdown.classList.add('is-hidden');
+      motion.hideCountdown();
       raceMotor.speed = 26;
       showToast('GO!', 0.8);
       playTone(720, 0.18, 'triangle', 0.14);
@@ -2225,10 +2308,10 @@ function fixedUpdate(dt) {
 
   if (state.mode === 'drive-countdown') {
     driveSession.countdown -= dt;
-    countdownValue.textContent = String(Math.max(1, Math.ceil(driveSession.countdown)));
+    motion.setCountdownDigit(Math.max(1, Math.ceil(driveSession.countdown)));
     if (driveSession.countdown <= 0) {
       state.mode = 'drive-active';
-      countdown.classList.add('is-hidden');
+      motion.hideCountdown();
       showToast('NIGHTSHIFT LIVE', 0.9);
       playTone(420, 0.16, 'sawtooth', 0.1);
       haptic(20);
@@ -2297,7 +2380,6 @@ function fixedUpdate(dt) {
   state.touchJumpCooldown = Math.max(0, state.touchJumpCooldown - dt);
   if (race.toastTimer > 0) {
     race.toastTimer = Math.max(0, race.toastTimer - dt);
-    if (race.toastTimer === 0) raceToast.classList.remove('is-visible');
   }
 
   updateFloatingWoodPhysics(state.elapsed);
@@ -2357,18 +2439,21 @@ function updateVisuals(dt) {
     let coinMatricesChanged = false;
     for (let i = 0; i < raceCoins.length; i++) {
       const coin = raceCoins[i];
-      if (!coin.collected && Math.abs(coin.distance - raceMotor.distance) < 230) {
-        setRaceCoinInstance(coin, i, state.elapsed * 5.8);
+      if ((!coin.collected && Math.abs(coin.distance - raceMotor.distance) < 230) || animatingRaceCoins.has(i)) {
+        setRaceCoinInstance(coin, i, raceMotionPhase.coin);
         coinMatricesChanged = true;
       }
     }
     if (coinMatricesChanged) raceCoinMesh.instanceMatrix.needsUpdate = true;
     for (let i = 0; i < raceShields.length; i++) {
       const shield = raceShields[i];
-      shield.mesh.rotateOnAxis(new THREE.Vector3(0, 1, 0), dt * 2.8);
+      if (!shield.mesh.visible) continue;
+      shieldSpinQuaternion.setFromAxisAngle(shieldSpinAxis, raceMotionPhase.shield + i * 0.72);
+      shield.mesh.quaternion.copy(shield.baseQuaternion).multiply(shieldSpinQuaternion);
       if (!shield.collected) {
         const frame = getRaceFrame(shield.distance);
-        shield.mesh.position.copy(shield.basePosition).addScaledVector(frame.up, Math.sin(state.elapsed * 2.4 + i) * 0.16);
+        const bob = Math.sin(raceMotionPhase.shield * 0.86 + i) * (motion.reducedMotion ? 0 : 0.16);
+        shield.mesh.position.copy(shield.basePosition).addScaledVector(frame.up, bob);
       }
     }
   }
@@ -2495,13 +2580,15 @@ function render(dt = 1 / 60) {
 }
 
 let accumulator = 0;
-let previousTime = performance.now();
 let fpsFrames = 0;
 let fpsElapsed = 0;
-function frame(now) {
-  const rawDelta = Math.max(0.0001, (now - previousTime) / 1000);
+let previousMotionWallTime = performance.now();
+function frame(_time, deltaTime) {
+  const motionWallTime = performance.now();
+  const motionDelta = Math.min(0.25, Math.max(0, (motionWallTime - previousMotionWallTime) / 1000));
+  previousMotionWallTime = motionWallTime;
+  const rawDelta = Math.max(0.0001, deltaTime / 1000);
   const delta = Math.min(rawDelta, 0.05);
-  previousTime = now;
   fpsFrames += 1;
   fpsElapsed += rawDelta;
   if (fpsElapsed >= 0.5) {
@@ -2515,14 +2602,17 @@ function frame(now) {
     fixedUpdate(1 / 60);
     accumulator -= 1 / 60;
   }
+  motionClock += motionDelta;
+  gsap.updateRoot(motionClock);
   render(delta);
-  requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+gsap.ticker.add(frame);
 
 window.advanceTime = (ms) => {
   const steps = Math.max(1, Math.round(ms / (1000 / 60)));
   for (let i = 0; i < steps; i++) fixedUpdate(1 / 60);
+  motionClock += steps / 60;
+  gsap.updateRoot(motionClock);
   render(steps / 60);
 };
 

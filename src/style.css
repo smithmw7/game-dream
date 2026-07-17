@@ -45,7 +45,6 @@ body { background: #070b22; }
   text-align: center;
   background: linear-gradient(145deg, rgba(8, 18, 55, .36), rgba(21, 5, 42, .72));
   backdrop-filter: blur(13px) saturate(1.08);
-  transition: opacity 450ms ease, visibility 450ms ease;
 }
 
 .splash-panel {
@@ -188,7 +187,7 @@ h2 {
   pointer-events: none;
 }
 
-.countdown.is-hidden { display: none; }
+.countdown.is-hidden { opacity: 0; visibility: hidden; }
 .countdown span { color: #fff6df; font: 500 clamp(110px, 25vw, 260px)/1 DM Mono, monospace; text-shadow: 0 12px 50px rgba(45, 68, 62, .25); }
 
 .race-hud {
@@ -208,7 +207,7 @@ h2 {
   box-shadow: 0 10px 35px rgba(29, 63, 69, .12);
 }
 
-.race-hud.is-hidden { display: none; }
+.race-hud.is-hidden { opacity: 0; visibility: hidden; pointer-events: none; }
 .drive-hud {
   border-color: rgba(255, 33, 145, .52);
   background: rgba(4, 5, 20, .86);
@@ -218,28 +217,24 @@ h2 {
 .hud-course, .hud-stat { display: grid; gap: 4px; padding-right: 10px; border-right: 1px solid rgba(255, 250, 240, .18); }
 .hud-course strong { font: 600 11px/1 Manrope, sans-serif; }
 .hud-stat strong { font: 500 13px/1 DM Mono, monospace; }
-.hud-shield { display: flex; align-items: center; gap: 6px; opacity: .3; font: 500 8px/1 DM Mono, monospace; letter-spacing: .08em; transition: opacity .2s, color .2s; }
+.hud-shield { display: flex; align-items: center; gap: 6px; opacity: .3; font: 500 8px/1 DM Mono, monospace; letter-spacing: .08em; }
 .hud-shield.is-active { color: #aaf7ff; opacity: 1; }
 .shield-dot { width: 9px; height: 9px; border: 1px solid currentColor; border-radius: 50%; box-shadow: 0 0 12px currentColor; }
 .speed-track { position: absolute; left: 10px; right: 10px; bottom: -5px; height: 3px; background: rgba(255, 250, 240, .12); overflow: hidden; }
-.speed-track i { display: block; width: 0; height: 100%; background: linear-gradient(90deg, #21ecec, #ffb51a, #ff3f79); box-shadow: 0 0 10px #21ecec; transition: width .12s linear; }
+.speed-track i { display: block; width: 100%; height: 100%; background: linear-gradient(90deg, #21ecec, #ffb51a, #ff3f79); box-shadow: 0 0 10px #21ecec; transform: scaleX(0); transform-origin: left center; }
 
 .race-toast {
   position: absolute;
   z-index: 3;
   left: 50%;
   top: 19%;
-  transform: translate(-50%, -8px);
   opacity: 0;
   color: #fff3c9;
   font: 500 13px/1 DM Mono, monospace;
   letter-spacing: .12em;
   text-shadow: 0 3px 22px rgba(36, 62, 64, .45);
   pointer-events: none;
-  transition: opacity .18s, transform .18s;
 }
-
-.race-toast.is-visible { opacity: 1; transform: translate(-50%, 0); }
 
 .instructions {
   margin: 8px 0 4px;
@@ -304,11 +299,7 @@ body.is-mobile #game { cursor: default; }
   box-shadow: inset 0 0 28px rgba(255, 250, 240, .05);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 140ms ease;
 }
-
-#touch-joystick.is-active { opacity: .72; }
-#touch-joystick.did-jump { border-color: rgba(255, 250, 240, .9); }
 
 #touch-joystick::before {
   content: '';
