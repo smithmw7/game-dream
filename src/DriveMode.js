@@ -498,7 +498,16 @@ export class DriveMode {
             float driveRoadX = vDriveWorldPosition.x - uDriveOriginX;
             float driveRoadZ = -vDriveWorldPosition.z + uDriveTravel;
             float laneA = 1.0 - smoothstep(0.035, 0.11, abs(abs(driveRoadX) - 1.63));
-            float edgeLine = 1.0 - smoothstep(0.04, 0.13, abs(abs(driveRoadX) - 5.55));
+            float edgeBand = 1.0 - smoothstep(0.12, 0.25, abs(abs(driveRoadX) - 5.55));
+            float edgeDashPhase = fract((driveRoadZ + 1.5) / 14.0);
+            float edgeDash = smoothstep(0.07, 0.13, edgeDashPhase)
+              * (1.0 - smoothstep(0.72, 0.79, edgeDashPhase));
+            float edgeLine = edgeBand * edgeDash;
+            vec3 edgeLineColor = mix(
+              vec3(0.01, 0.78, 1.0),
+              vec3(1.0, 0.02, 0.47),
+              step(0.0, driveRoadX)
+            );
             float dash = step(0.48, fract(driveRoadZ / 8.0));
             float marker = laneA * dash;
             vec2 puddleUv = vec2(driveRoadX * 0.42, driveRoadZ * 0.052);
@@ -530,7 +539,7 @@ export class DriveMode {
             asphalt += tireWear * vec3(0.005, 0.008, 0.014) + rainRill * vec3(0.002, 0.008, 0.014);
             diffuseColor.rgb = asphalt;
             diffuseColor.rgb += marker * vec3(0.08, 0.82, 1.0) * 0.52;
-            diffuseColor.rgb += edgeLine * vec3(1.0, 0.02, 0.47) * 0.62;
+            diffuseColor.rgb += edgeLine * edgeLineColor * 0.62;
             diffuseColor.rgb += cyanReflection * vec3(0.0, 0.34, 0.48) * (0.18 + puddle * 0.5);
             diffuseColor.rgb += pinkReflection * vec3(0.48, 0.0, 0.22) * (0.18 + puddle * 0.5);
             diffuseColor.rgb += cityReflectionCyan * vec3(0.01, 0.3, 0.48) + cityReflectionPink * vec3(0.52, 0.01, 0.28);
@@ -558,19 +567,30 @@ export class DriveMode {
           .replace(
             '#include <emissivemap_fragment>',
             `#include <emissivemap_fragment>
-            totalEmissiveRadiance += marker * vec3(0.02, 0.32, 0.58) + edgeLine * vec3(0.72, 0.0, 0.2) + neonStreak * vec3(0.14, 0.015, 0.25);
+            totalEmissiveRadiance += marker * vec3(0.02, 0.32, 0.58) + edgeLine * edgeLineColor * 0.72 + neonStreak * vec3(0.14, 0.015, 0.25);
             totalEmissiveRadiance += cyanReflection * vec3(0.0, 0.18, 0.28) + pinkReflection * vec3(0.25, 0.0, 0.12);
             totalEmissiveRadiance += cityReflectionCyan * vec3(0.0, 0.22, 0.36) + cityReflectionPink * vec3(0.4, 0.0, 0.2);
             totalEmissiveRadiance += lampReflection * vec3(0.34, 0.22, 0.06);`,
           )
           .replace(
             '#include <opaque_fragment>',
-            `outgoingLight += marker * vec3(0.03, 0.42, 0.72) + edgeLine * vec3(0.82, 0.0, 0.24);
+            `outgoingLight += marker * vec3(0.03, 0.42, 0.72) + edgeLine * edgeLineColor * 0.82;
             outgoingLight += cyanReflection * vec3(0.0, 0.17, 0.28) + pinkReflection * vec3(0.24, 0.0, 0.12);
             outgoingLight += cityReflectionCyan * vec3(0.0, 0.2, 0.34) + cityReflectionPink * vec3(0.38, 0.0, 0.19);
             outgoingLight += lampReflection * vec3(0.38, 0.25, 0.07);
             #include <opaque_fragment>`,
           );
+      } else if (style === 'road-edge-dash') {
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+          float driveEdgeZ = -vDriveWorldPosition.z + uDriveTravel;
+          float driveEdgePhase = fract((driveEdgeZ + 1.5) / 14.0);
+          float driveEdgeDash = smoothstep(0.07, 0.13, driveEdgePhase)
+            * (1.0 - smoothstep(0.72, 0.79, driveEdgePhase));
+          if (driveEdgeDash < 0.01) discard;
+          diffuseColor.rgb *= 0.72 + driveEdgeDash * 0.42;`,
+        );
       } else if (style === 'building') {
         shader.fragmentShader = shader.fragmentShader
           .replace(
@@ -599,7 +619,7 @@ export class DriveMode {
         );
       }
     };
-    material.customProgramCacheKey = () => `game-dream-drive-${key}-v8`;
+    material.customProgramCacheKey = () => `game-dream-drive-${key}-v9`;
     return material;
   }
 
@@ -860,9 +880,9 @@ export class DriveMode {
 
       const railMaterial = this.patchBend(new THREE.MeshBasicMaterial({
         color: side < 0 ? '#14dcff' : '#ff1b8d', toneMapped: false,
-      }), `road-edge-${side}`);
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 320, 1, 1, this.isMobile ? 64 : 128), railMaterial);
-      rail.position.set(side * 6.03, 0.05, -141);
+      }), `road-edge-${side}`, 'road-edge-dash');
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.045, 320, 1, 1, this.isMobile ? 64 : 128), railMaterial);
+      rail.position.set(side * 5.55, -0.005, -141);
       rail.frustumCulled = false;
       this.roadEnvironment.add(rail);
     }
@@ -1875,6 +1895,7 @@ export class DriveMode {
         normalMap: `${this.asphaltNormalMap.image.width}x${this.asphaltNormalMap.image.height} procedural tangent-space asphalt`,
         normalRepeat: [this.asphaltNormalMap.repeat.x, this.asphaltNormalMap.repeat.y],
         puddles: 'organic shader mask with low roughness and flattened micro-normal',
+        sideMarkings: 'wide cyan and magenta 14-meter scrolling dashes with long painted strokes',
       },
       visualGains: this.visualGains?.snapshot(),
       coast: this.coastalSection.snapshot(),
