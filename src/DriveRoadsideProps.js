@@ -8,6 +8,9 @@ const ROAD_HALF_WIDTH = 6;
 const LAMP_COLORS = ['#ffbd76', '#ff4db8', '#32edff'];
 const GLYPH_COLORS = ['#38f5ff', '#ff4caf', '#ffcb76', '#a778ff'];
 const PANEL_COLORS = ['#07151d', '#130b20', '#0b1325', '#171021'];
+const BEAM_NEAR_Z = 18;
+const BEAM_FAR_Z_MOBILE = -78;
+const BEAM_FAR_Z_DESKTOP = -118;
 
 function clampDt(value) {
   return THREE.MathUtils.clamp(Number.isFinite(value) ? value : 0, 0, 0.1);
@@ -29,6 +32,27 @@ function setupInstancedMesh(mesh, name) {
   mesh.castShadow = false;
   mesh.receiveShadow = false;
   return mesh;
+}
+
+function createBeamAlphaTexture(size = 32) {
+  const data = new Uint8Array(size * 4);
+  for (let index = 0; index < size; index++) {
+    const t = index / Math.max(1, size - 1);
+    const edgeFade = Math.pow(Math.sin(t * Math.PI), 0.72);
+    const value = Math.round(255 * edgeFade);
+    const offset = index * 4;
+    data[offset] = value;
+    data[offset + 1] = value;
+    data[offset + 2] = value;
+    data[offset + 3] = 255;
+  }
+  const texture = new THREE.DataTexture(data, 1, size, THREE.RGBAFormat);
+  texture.name = 'Roadside streetlight beam axial fade';
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 /**
@@ -64,15 +88,19 @@ export class DriveRoadsideProps {
       gantries: 0,
       sideSigns: 0,
     };
+    this.biomeTransitions = 0;
     this.motionPhase = { pulse: 0, flicker: 0 };
     this.composeObject = new THREE.Object3D();
     this.tempColor = new THREE.Color();
+    this.beamCandidates = [];
+    this.visibleBeamCones = 0;
 
     this.counts = {
       streetlightStations: this.isMobile ? 9 : 16,
       overheadGantries: this.isMobile ? 3 : 5,
       sideSigns: this.isMobile ? 5 : 8,
       practicalPointLights: this.isMobile ? 1 : 2,
+      beamStations: this.isMobile ? 3 : 5,
     };
 
     this.environment = new THREE.Group();
@@ -118,6 +146,8 @@ export class DriveRoadsideProps {
   createSharedGeometry() {
     this.boxGeometry = new THREE.BoxGeometry(1, 1, 1);
     this.haloGeometry = new THREE.IcosahedronGeometry(1, this.isMobile ? 0 : 1);
+    this.beamGeometry = new THREE.ConeGeometry(1, 1, this.isMobile ? 8 : 12, 1, true);
+    this.beamAlphaTexture = createBeamAlphaTexture(this.isMobile ? 24 : 32);
   }
 
   createLogicalPools() {
@@ -196,6 +226,19 @@ export class DriveRoadsideProps {
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       }), 'lamp-halo'),
+      beam: apply(new THREE.MeshBasicMaterial({
+        color: '#ffffff',
+        toneMapped: false,
+        vertexColors: true,
+        transparent: true,
+        opacity: this.isMobile ? 0.085 : 0.065,
+        alphaMap: this.beamAlphaTexture,
+        depthTest: true,
+        depthWrite: false,
+        fog: true,
+        blending: THREE.AdditiveBlending,
+        side: THREE.FrontSide,
+      }), 'lamp-fog-scattering-beam'),
       glyph: apply(new THREE.MeshBasicMaterial({
         color: '#ffffff',
         toneMapped: false,
@@ -217,6 +260,7 @@ export class DriveRoadsideProps {
       + gantryStructureCapacity
       + sideStructureCapacity;
     const lampCapacity = this.counts.streetlightStations * 2;
+    const beamCapacity = this.counts.beamStations * 2;
     const panelCapacity = this.counts.overheadGantries * 3 + this.counts.sideSigns;
     const glyphCapacity = this.counts.overheadGantries * 3 * 5
       + this.counts.sideSigns * 5;
@@ -241,11 +285,15 @@ export class DriveRoadsideProps {
       new THREE.InstancedMesh(this.haloGeometry, materials.halo, lampCapacity),
       `${name} · pooled additive lamp haze`,
     );
+    const beamMesh = setupInstancedMesh(
+      new THREE.InstancedMesh(this.beamGeometry, materials.beam, beamCapacity),
+      `${name} · nearest pooled additive fog-scattering beams`,
+    );
     const glyphMesh = setupInstancedMesh(
       new THREE.InstancedMesh(this.boxGeometry, materials.glyph, glyphCapacity),
       `${name} · pooled pseudo-text and lane glyphs`,
     );
-    group.add(structureMesh, panelMesh, lampMesh, haloMesh, glyphMesh);
+    group.add(structureMesh, panelMesh, beamMesh, lampMesh, haloMesh, glyphMesh);
 
     const pointLights = [];
     for (let index = 0; index < this.counts.practicalPointLights; index++) {
@@ -264,6 +312,7 @@ export class DriveRoadsideProps {
       panelMesh,
       lampMesh,
       haloMesh,
+      beamMesh,
       glyphMesh,
       pointLights,
       cursors: {
@@ -271,6 +320,7 @@ export class DriveRoadsideProps {
         panel: 0,
         lamp: 0,
         halo: 0,
+        beam: 0,
         glyph: 0,
       },
     };
@@ -319,9 +369,39 @@ export class DriveRoadsideProps {
     set.cursors.halo += 1;
   }
 
+  addBeam(set, transform) {
+    this.setInstance(set.beamMesh, set.cursors.beam, transform);
+    set.cursors.beam += 1;
+  }
+
   addGlyph(set, transform) {
     this.setInstance(set.glyphMesh, set.cursors.glyph, transform);
     set.cursors.glyph += 1;
+  }
+
+  selectBeamStations() {
+    const candidates = this.beamCandidates;
+    candidates.length = 0;
+    const farZ = this.isMobile ? BEAM_FAR_Z_MOBILE : BEAM_FAR_Z_DESKTOP;
+    this.streetlights.forEach((station) => {
+      station.beamVisible = false;
+      if (station.z <= farZ || station.z >= BEAM_NEAR_Z) return;
+      const distance = Math.abs(station.z - CAR_Z);
+      let insertAt = 0;
+      while (
+        insertAt < candidates.length
+        && Math.abs(candidates[insertAt].z - CAR_Z) <= distance
+      ) {
+        insertAt += 1;
+      }
+      if (insertAt >= this.counts.beamStations) return;
+      candidates.splice(insertAt, 0, station);
+      if (candidates.length > this.counts.beamStations) candidates.pop();
+    });
+    candidates.forEach((station) => {
+      station.beamVisible = true;
+    });
+    this.visibleBeamCones = candidates.length * 2;
   }
 
   localZ(set, worldZ) {
@@ -379,6 +459,19 @@ export class DriveRoadsideProps {
         sz: 0.64 * pulse * flicker,
         color: lampColor,
       });
+      if (station.beamVisible) {
+        const beamHeight = station.height - 0.45;
+        const lampY = station.height - 0.35;
+        this.addBeam(set, {
+          x: lampX,
+          y: lampY - beamHeight * 0.5,
+          z: z + 0.04,
+          sx: (this.isMobile ? 1.82 : 2.05) * pulse,
+          sy: beamHeight,
+          sz: (this.isMobile ? 1.28 : 1.48) * pulse,
+          color: lampColor,
+        });
+      }
     }
   }
 
@@ -575,6 +668,7 @@ export class DriveRoadsideProps {
     Object.keys(set.cursors).forEach((key) => {
       set.cursors[key] = 0;
     });
+    this.selectBeamStations();
     this.streetlights.forEach((station) => this.writeStreetlight(set, station));
     this.gantries.forEach((gantry) => this.writeGantry(set, gantry));
     this.sideSigns.forEach((sign) => this.writeSideSign(set, sign));
@@ -584,6 +678,7 @@ export class DriveRoadsideProps {
       ['panel', set.panelMesh],
       ['lamp', set.lampMesh],
       ['halo', set.haloMesh],
+      ['beam', set.beamMesh],
       ['glyph', set.glyphMesh],
     ];
     meshEntries.forEach(([key, mesh]) => {
@@ -637,7 +732,14 @@ export class DriveRoadsideProps {
     station.z = z;
     station.height = 5.25 + this.random() * 1.15;
     station.armLength = 1.35 + this.random() * 0.48;
-    station.palette = Math.floor(this.random() * LAMP_COLORS.length);
+    const paletteRoll = this.random();
+    if (this.currentBiome.includes('coast')) {
+      station.palette = paletteRoll < 0.58 ? 0 : (paletteRoll < 0.8 ? 2 : 1);
+    } else if (this.currentBiome.includes('desert')) {
+      station.palette = paletteRoll < 0.52 ? 0 : (paletteRoll < 0.78 ? 1 : 2);
+    } else {
+      station.palette = Math.floor(paletteRoll * LAMP_COLORS.length);
+    }
     station.pulseSeed = this.random() * Math.PI * 2;
     station.speedFactor = 0.985 + this.random() * 0.025;
   }
@@ -687,6 +789,7 @@ export class DriveRoadsideProps {
     this.randomState = (SEED ^ hashString(this.currentBiome)) >>> 0;
     this.distance = 0;
     this.elapsed = 0;
+    this.biomeTransitions = 0;
     this.motionPhase.pulse = 0;
     this.motionPhase.flicker = 0;
     Object.assign(this.recycled, {
@@ -701,7 +804,6 @@ export class DriveRoadsideProps {
     const signStep = this.isMobile ? (isDesert ? 78 : 63) : (isDesert ? 57 : 44);
     this.streetlights.forEach((station, index) => {
       this.configureStreetlight(station, -10 - index * lightStep);
-      if (isDesert && index % 3 === 0) station.palette = 0;
     });
     this.gantries.forEach((gantry, index) => {
       this.configureGantry(gantry, -52 - index * gantryStep);
@@ -733,7 +835,11 @@ export class DriveRoadsideProps {
 
     const nextBiome = typeof biome === 'string' && biome ? biome : 'city';
     if (nextBiome !== this.currentBiome) {
-      this.reset({ biome: nextBiome });
+      // Preserve every live pool position across district boundaries. Existing
+      // furniture exits naturally while recycled props adopt the next biome's
+      // palette and spacing, producing a continuous city/coast/desert handoff.
+      this.currentBiome = nextBiome;
+      this.biomeTransitions += 1;
     }
     this.setRenderMode(onBridge);
     this.alignBridgeSet(roadElevation, roadGrade);
@@ -802,10 +908,18 @@ export class DriveRoadsideProps {
         grade: +this.roadGrade.toFixed(4),
       },
       style: 'dark high-contrast cyber highway with neon practical streetlights',
+      biomeTransition: {
+        changes: this.biomeTransitions,
+        strategy: 'continuous recycle-through; no full-pool reset on biome change',
+      },
       lighting: {
         pairedStreetlightStations: this.streetlights.length,
         emissiveLampHeads: this.streetlights.length * 2,
         practicalPointLights: this.counts.practicalPointLights,
+        fogScattering: 'instanced additive cone approximation',
+        fogScatteringStations: this.visibleBeamCones / 2,
+        fogScatteringCones: this.visibleBeamCones,
+        maxFogScatteringStations: this.counts.beamStations,
         reducedMotion: Boolean(this.prefersReducedMotion()),
       },
       signage: {
@@ -817,8 +931,9 @@ export class DriveRoadsideProps {
       performance: {
         poolProfile: this.isMobile ? 'mobile-reduced' : 'desktop-full',
         instanced: true,
-        visibleInstancedDrawCalls: 5,
+        visibleInstancedDrawCalls: 6,
         hiddenAlternateRenderSet: true,
+        transparentBeamBudget: `${this.counts.beamStations * 2} cones maximum`,
       },
       recycled: { ...this.recycled },
       nearbyProps: this.nearbyProps(),
@@ -829,15 +944,25 @@ export class DriveRoadsideProps {
     this.pulseTween?.kill();
     this.flickerTween?.kill();
     this.environment.removeFromParent();
-    const geometries = new Set([this.boxGeometry, this.haloGeometry]);
+    const geometries = new Set([this.boxGeometry, this.haloGeometry, this.beamGeometry]);
     const materials = new Set();
+    const textures = new Set([this.beamAlphaTexture]);
     this.environment.traverse((child) => {
       if (child.isMesh && child.geometry) geometries.add(child.geometry);
       if (!child.material) return;
       const childMaterials = Array.isArray(child.material) ? child.material : [child.material];
-      childMaterials.filter(Boolean).forEach((material) => materials.add(material));
+      childMaterials.filter(Boolean).forEach((material) => {
+        materials.add(material);
+        if (material.map) textures.add(material.map);
+        if (material.alphaMap) textures.add(material.alphaMap);
+        if (material.normalMap) textures.add(material.normalMap);
+        if (material.roughnessMap) textures.add(material.roughnessMap);
+        if (material.metalnessMap) textures.add(material.metalnessMap);
+        if (material.emissiveMap) textures.add(material.emissiveMap);
+      });
     });
     geometries.forEach((geometry) => geometry.dispose());
     materials.forEach((material) => material.dispose());
+    textures.forEach((texture) => texture?.dispose());
   }
 }

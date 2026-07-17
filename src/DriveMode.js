@@ -3,7 +3,7 @@ import { gsap } from 'gsap';
 import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { DriveVisualGains } from './DriveVisualGains.js';
-import { DriveCanalSection } from './DriveCanalSection.js';
+import { DriveCoastalSection } from './DriveCoastalSection.js';
 import { DriveDesertSection } from './DriveDesertSection.js';
 import { DriveBridgeSection } from './DriveBridgeSection.js';
 import { DriveRoadsideProps } from './DriveRoadsideProps.js';
@@ -12,13 +12,24 @@ const DRIVE_ORIGIN_X = -1000;
 const ROAD_NEAR_Z = 18;
 const ROAD_FAR_Z = -300;
 const CAR_Z = 4;
+const ROAD_SURFACE_Y = -0.04;
 const LANE_X = [-3.25, 0, 3.25];
+const RAMP_LENGTH = 15;
+const RAMP_HALF_LENGTH = RAMP_LENGTH * 0.5;
+const RAMP_TILT = 0.135;
+const RAMP_CENTER_Y = 0.72;
+const RAMP_LAUNCH_HEIGHT = (
+  RAMP_CENTER_Y
+  + RAMP_HALF_LENGTH * Math.sin(RAMP_TILT)
+  + Math.cos(RAMP_TILT) * 0.25
+  - ROAD_SURFACE_Y
+);
 const DRIVE_CYCLE_LENGTH = 2400;
-const CANAL_APPROACH_START = 250;
-const CANAL_ENTRY_START = 300;
-const CANAL_RUN_START = 345;
-const CANAL_EXIT_START = 820;
-const CANAL_RETURN_START = 865;
+const COAST_APPROACH_START = 250;
+const COAST_ENTRY_START = 300;
+const COAST_RUN_START = 345;
+const COAST_EXIT_START = 820;
+const COAST_RETURN_START = 865;
 const DESERT_APPROACH_START = 1050;
 const DESERT_RUN_START = 1120;
 const BRIDGE_CLIMB_START = 1600;
@@ -27,15 +38,117 @@ const BRIDGE_DESCENT_START = 2040;
 const BRIDGE_RETURN_START = 2150;
 const CITY_RETURN_START = 2280;
 const BRIDGE_PROFILE_WORLD_LENGTH = 300;
-const CANAL_PHASES = new Set(['canal-approach', 'canal-entry', 'canal', 'canal-exit']);
+const COAST_PHASES = new Set([
+  'coast-approach',
+  'coast-entry',
+  'coast',
+  'coast-exit',
+  'coast-departure',
+]);
+const COAST_SCENERY_PHASES = new Set([...COAST_PHASES, 'desert-approach']);
 const DESERT_PHASES = new Set(['desert-approach', 'desert', 'desert-return']);
 const BRIDGE_PHASES = new Set(['bridge-climb', 'bridge-span', 'bridge-descent']);
-const ROAD_COLLISION_PHASES = new Set(['city', 'desert', 'desert-return']);
-const ROADSIDE_PHASES = new Set(['city', 'canal-approach', 'desert-approach', 'desert', 'desert-return']);
+const ROAD_COLLISION_PHASES = new Set([
+  'city',
+  'coast-approach',
+  'coast',
+  'coast-departure',
+  'desert-approach',
+  'desert',
+  'desert-return',
+]);
+const ROADSIDE_PHASES = new Set([
+  'city',
+  'coast-approach',
+  'coast-entry',
+  'coast',
+  'coast-exit',
+  'coast-departure',
+  'desert-approach',
+  'desert',
+  'desert-return',
+]);
 
 function smootherStep01(value) {
   const t = THREE.MathUtils.clamp(value, 0, 1);
   return t * t * t * (t * (t * 6 - 15) + 10);
+}
+
+function createAsphaltNormalTexture(size) {
+  const heights = new Float32Array(size * size);
+  const pixels = new Uint8Array(size * size * 4);
+  const sample = (x, y) => heights[
+    ((y + size) % size) * size + ((x + size) % size)
+  ];
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+      const v = y / size;
+      const aggregate = (
+        Math.sin(u * Math.PI * 18 + Math.sin(v * Math.PI * 4) * 1.7)
+        + Math.sin(v * Math.PI * 34 + u * Math.PI * 3)
+        + Math.sin((u + v) * Math.PI * 58)
+      ) / 3;
+      const grain = (
+        Math.sin(x * 12.9898 + y * 78.233) * 43758.5453
+      ) % 1;
+      heights[y * size + x] = aggregate * 0.34 + Math.abs(grain) * 0.66;
+    }
+  }
+
+  const strength = 2.35;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const nx = (sample(x - 1, y) - sample(x + 1, y)) * strength;
+      const ny = (sample(x, y - 1) - sample(x, y + 1)) * strength;
+      const length = Math.hypot(nx, ny, 1);
+      const offset = (y * size + x) * 4;
+      pixels[offset] = Math.round((nx / length * 0.5 + 0.5) * 255);
+      pixels[offset + 1] = Math.round((ny / length * 0.5 + 0.5) * 255);
+      pixels[offset + 2] = Math.round((1 / length * 0.5 + 0.5) * 255);
+      pixels[offset + 3] = 255;
+    }
+  }
+
+  const texture = new THREE.DataTexture(pixels, size, size, THREE.RGBAFormat);
+  texture.name = 'Procedural rough asphalt normal';
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(3, 64);
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.generateMipmaps = true;
+  texture.anisotropy = 4;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function desertBlendAtCycleDistance(cycleDistance) {
+  if (cycleDistance < COAST_RETURN_START) return 0;
+  if (cycleDistance < DESERT_RUN_START + 110) {
+    return smootherStep01(
+      (cycleDistance - COAST_RETURN_START)
+      / (DESERT_RUN_START + 110 - COAST_RETURN_START),
+    );
+  }
+  if (cycleDistance < BRIDGE_RETURN_START) return 1;
+  if (cycleDistance < CITY_RETURN_START) {
+    return 1 - smootherStep01(
+      (cycleDistance - BRIDGE_RETURN_START)
+      / (CITY_RETURN_START - BRIDGE_RETURN_START),
+    );
+  }
+  return 0;
+}
+
+function rampElevationBeforeMarker(localDistance, marker) {
+  const progress = THREE.MathUtils.clamp(
+    (localDistance - (marker - RAMP_LENGTH)) / RAMP_LENGTH,
+    0,
+    1,
+  );
+  return RAMP_LAUNCH_HEIGHT * progress;
 }
 
 function bridgeElevationAtProgress(progress, variant = 'lake') {
@@ -63,45 +176,43 @@ function driveSectionAtDistance(distance) {
   let phase = 'city';
   let label = 'ENDLESS CITY';
   let start = 0;
-  let end = CANAL_APPROACH_START;
+  let end = COAST_APPROACH_START;
   let vehicle = 'car';
   let surface = 'road';
   let biome = 'city';
   const bridgeVariant = ['lake', 'river', 'desert'][cycleIndex % 3];
 
-  if (cycleDistance >= CANAL_APPROACH_START && cycleDistance < CANAL_ENTRY_START) {
-    phase = 'canal-approach';
-    label = 'AQUA LINK';
-    start = CANAL_APPROACH_START;
-    end = CANAL_ENTRY_START;
-  } else if (cycleDistance >= CANAL_ENTRY_START && cycleDistance < CANAL_RUN_START) {
-    phase = 'canal-entry';
-    label = 'AMPHIBIOUS TRANSFORM';
-    start = CANAL_ENTRY_START;
-    end = CANAL_RUN_START;
-    vehicle = 'transforming-to-boat';
+  if (cycleDistance >= COAST_APPROACH_START && cycleDistance < COAST_ENTRY_START) {
+    phase = 'coast-approach';
+    label = 'OCEAN DRIVE LINK';
+    start = COAST_APPROACH_START;
+    end = COAST_ENTRY_START;
+  } else if (cycleDistance >= COAST_ENTRY_START && cycleDistance < COAST_RUN_START) {
+    phase = 'coast-entry';
+    label = 'HOTEL STRIP JUMP';
+    start = COAST_ENTRY_START;
+    end = COAST_RUN_START;
     surface = 'air';
-  } else if (cycleDistance >= CANAL_RUN_START && cycleDistance < CANAL_EXIT_START) {
-    phase = 'canal';
-    label = 'NEON TIDEWAY';
-    start = CANAL_RUN_START;
-    end = CANAL_EXIT_START;
-    vehicle = 'speedboat';
-    surface = 'water';
-  } else if (cycleDistance >= CANAL_EXIT_START && cycleDistance < CANAL_RETURN_START) {
-    phase = 'canal-exit';
-    label = 'ROADLINK TRANSFORM';
-    start = CANAL_EXIT_START;
-    end = CANAL_RETURN_START;
-    vehicle = 'transforming-to-car';
+  } else if (cycleDistance >= COAST_RUN_START && cycleDistance < COAST_EXIT_START) {
+    phase = 'coast';
+    label = 'NEON HOTEL BOULEVARD';
+    start = COAST_RUN_START;
+    end = COAST_EXIT_START;
+  } else if (cycleDistance >= COAST_EXIT_START && cycleDistance < COAST_RETURN_START) {
+    phase = 'coast-exit';
+    label = 'CAUSEWAY JUMP';
+    start = COAST_EXIT_START;
+    end = COAST_RETURN_START;
     surface = 'air';
-  } else if (cycleDistance >= CANAL_RETURN_START) {
-    start = CANAL_RETURN_START;
+  } else if (cycleDistance >= COAST_RETURN_START) {
+    phase = 'coast-departure';
+    label = 'SUNSET CAUSEWAY';
+    start = COAST_RETURN_START;
     end = DESERT_APPROACH_START;
   }
 
-  if (CANAL_PHASES.has(phase)) {
-    biome = 'canal';
+  if (COAST_PHASES.has(phase)) {
+    biome = 'coast';
   }
 
   if (cycleDistance >= DESERT_APPROACH_START && cycleDistance < DESERT_RUN_START) {
@@ -143,8 +254,11 @@ function driveSectionAtDistance(distance) {
     end = CITY_RETURN_START;
     biome = 'desert';
   } else if (cycleDistance >= CITY_RETURN_START) {
+    phase = 'city';
+    label = 'MIDNIGHT CITY RETURN';
     start = CITY_RETURN_START;
     end = DRIVE_CYCLE_LENGTH;
+    biome = 'city';
   }
 
   const progress = THREE.MathUtils.clamp((cycleDistance - start) / Math.max(1, end - start), 0, 1);
@@ -155,9 +269,18 @@ function driveSectionAtDistance(distance) {
       1,
     )
     : (cycleDistance >= BRIDGE_RETURN_START ? 1 : 0);
-  const collisionProfile = ROAD_COLLISION_PHASES.has(phase)
+  const climbingJumpRamp = (
+    phase === 'coast-approach'
+    && cycleDistance >= COAST_ENTRY_START - RAMP_LENGTH
+  ) || (
+    phase === 'coast'
+    && cycleDistance >= COAST_EXIT_START - RAMP_LENGTH
+  );
+  const collisionProfile = surface === 'road'
+    && ROAD_COLLISION_PHASES.has(phase)
+    && !climbingJumpRamp
     ? 'road'
-    : (phase === 'canal' ? 'water' : 'none');
+    : 'none';
   return {
     phase,
     label,
@@ -213,7 +336,6 @@ export class DriveMode {
       distance: 0,
       speed: 0,
       shards: 0,
-      orbs: 0,
       score: 0,
       elapsed: 0,
       crashed: false,
@@ -232,6 +354,13 @@ export class DriveMode {
       bridgeVariant: 'lake',
       bridgeProgress: 0,
       collisionProfile: 'road',
+      transitionElevation: 0,
+      sunset: 0,
+      starVisibility: 0,
+      desertBlend: 0,
+      coastBlend: 0,
+      fogNear: 38,
+      fogFar: 210,
     };
     this.bendUniforms = {
       uDriveTime: { value: 0 },
@@ -242,6 +371,7 @@ export class DriveMode {
       uBendY: { value: 0.00128 },
       uDriveOriginX: { value: DRIVE_ORIGIN_X },
       uDesertMix: { value: 0 },
+      uSunset: { value: 0 },
     };
     this.motionPhase = { shard: 0 };
     this.shardPhaseTween = gsap.to(this.motionPhase, {
@@ -263,11 +393,9 @@ export class DriveMode {
     this.createCity();
     this.createRunnerObjects();
     this.createCar();
-    this.canalSection = new DriveCanalSection(this.root, {
+    this.coastalSection = new DriveCoastalSection(this.root, {
       isMobile: this.isMobile,
       patchMaterial: (material, key, style) => this.patchBend(material, key, style),
-      onCollect: (event) => this.handleCanalCollect(event),
-      onCrash: (event) => this.handleCanalCrash(event),
       prefersReducedMotion: this.prefersReducedMotion,
     });
     this.desertSection = new DriveDesertSection(this.root, {
@@ -285,10 +413,8 @@ export class DriveMode {
       patchMaterial: (material, key, style) => this.patchBend(material, key, style),
       prefersReducedMotion: this.prefersReducedMotion,
     });
-    this.boatRig = this.canalSection.boatRig;
-    this.carImpactRig.add(this.boatRig);
-    this.createMorphEffects();
-    this.createVehicleMorphTimelines();
+    this.createJumpEffects();
+    this.createJumpTimelines();
     this.createTransitionRamps();
     this.createLights();
     this.visualGains = new DriveVisualGains(this.root, this.car, {
@@ -348,7 +474,20 @@ export class DriveMode {
         uniform float uDriveOriginX;
         uniform float uDesertMix;
         varying vec3 vDriveWorldPosition;
-        varying vec2 vDriveUv;`,
+        varying vec2 vDriveUv;
+        float driveHash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+        }
+        float driveValueNoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(driveHash(i), driveHash(i + vec2(1.0, 0.0)), u.x),
+            mix(driveHash(i + vec2(0.0, 1.0)), driveHash(i + vec2(1.0, 1.0)), u.x),
+            u.y
+          );
+        }`,
       );
 
       if (style === 'road') {
@@ -362,9 +501,13 @@ export class DriveMode {
             float edgeLine = 1.0 - smoothstep(0.04, 0.13, abs(abs(driveRoadX) - 5.55));
             float dash = step(0.48, fract(driveRoadZ / 8.0));
             float marker = laneA * dash;
-            vec2 puddleCell = floor(vec2(driveRoadX * 1.7, driveRoadZ * 0.18));
-            float puddleNoise = fract(sin(dot(puddleCell, vec2(12.9898, 78.233))) * 43758.5453);
-            float puddle = smoothstep(0.61, 0.94, puddleNoise) * (0.36 + 0.64 * (1.0 - smoothstep(1.2, 5.4, abs(driveRoadX))));
+            vec2 puddleUv = vec2(driveRoadX * 0.42, driveRoadZ * 0.052);
+            float puddleNoise = driveValueNoise(puddleUv)
+              * 0.68 + driveValueNoise(puddleUv * 2.07 + 17.3) * 0.32;
+            float puddleEdge = puddleNoise
+              + sin(puddleUv.x * 2.2 + puddleUv.y * 0.72) * 0.075;
+            float puddle = smoothstep(0.58, 0.73, puddleEdge)
+              * (0.42 + 0.58 * (1.0 - smoothstep(1.1, 5.5, abs(driveRoadX))));
             vec2 gritCell = floor(vec2(driveRoadX * 21.0, driveRoadZ * 3.2));
             float microGrit = fract(sin(dot(gritCell, vec2(18.9898, 63.7264))) * 31758.5453);
             float tireWear = exp(-abs(abs(driveRoadX) - 1.62) * 0.7);
@@ -383,7 +526,7 @@ export class DriveMode {
             float lampCadence = pow(0.5 + 0.5 * cos(driveRoadZ * 0.145), 38.0);
             float lampReflection = lampCadence * exp(-abs(abs(driveRoadX) - 4.6) * 0.72) * (0.36 + puddle * 0.8);
             vec3 asphalt = mix(vec3(0.004, 0.006, 0.013), vec3(0.018, 0.03, 0.052), puddle);
-            asphalt *= 0.78 + microGrit * 0.26;
+            asphalt *= 0.86 + microGrit * 0.12;
             asphalt += tireWear * vec3(0.005, 0.008, 0.014) + rainRill * vec3(0.002, 0.008, 0.014);
             diffuseColor.rgb = asphalt;
             diffuseColor.rgb += marker * vec3(0.08, 0.82, 1.0) * 0.52;
@@ -397,7 +540,20 @@ export class DriveMode {
           .replace(
             '#include <roughnessmap_fragment>',
             `#include <roughnessmap_fragment>
-            roughnessFactor = clamp(mix(0.35, 0.035, puddle) + (microGrit - 0.5) * 0.085 - rainRill * 0.07, 0.028, 0.48);`,
+            roughnessFactor = clamp(mix(0.78, 0.07, puddle) + (microGrit - 0.5) * 0.06 - rainRill * 0.05, 0.055, 0.9);`,
+          )
+          .replace(
+            '#include <normal_fragment_maps>',
+            `#include <normal_fragment_maps>
+            normal = normalize(mix(normal, nonPerturbedNormal, puddle * 0.82));`,
+          )
+          .replace(
+            '#include <lights_physical_fragment>',
+            `#include <lights_physical_fragment>
+            #ifdef USE_CLEARCOAT
+              material.clearcoat = mix(0.06, 0.95, puddle);
+              material.clearcoatRoughness = mix(0.38, 0.055, puddle);
+            #endif`,
           )
           .replace(
             '#include <emissivemap_fragment>',
@@ -409,8 +565,7 @@ export class DriveMode {
           )
           .replace(
             '#include <opaque_fragment>',
-            `outgoingLight *= 0.26;
-            outgoingLight += marker * vec3(0.03, 0.42, 0.72) + edgeLine * vec3(0.82, 0.0, 0.24);
+            `outgoingLight += marker * vec3(0.03, 0.42, 0.72) + edgeLine * vec3(0.82, 0.0, 0.24);
             outgoingLight += cyanReflection * vec3(0.0, 0.17, 0.28) + pinkReflection * vec3(0.24, 0.0, 0.12);
             outgoingLight += cityReflectionCyan * vec3(0.0, 0.2, 0.34) + cityReflectionPink * vec3(0.38, 0.0, 0.19);
             outgoingLight += lampReflection * vec3(0.38, 0.25, 0.07);
@@ -444,38 +599,48 @@ export class DriveMode {
         );
       }
     };
-    material.customProgramCacheKey = () => `game-dream-drive-${key}-v6`;
+    material.customProgramCacheKey = () => `game-dream-drive-${key}-v8`;
     return material;
   }
 
   createSky() {
     this.skyDesertMix = this.bendUniforms.uDesertMix;
+    this.skySunset = this.bendUniforms.uSunset;
     const skyMaterial = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,
       uniforms: {
         time: this.bendUniforms.uDriveTime,
         desertMix: this.skyDesertMix,
+        sunset: this.skySunset,
       },
       vertexShader: `varying vec3 vSkyDirection; void main(){ vSkyDirection=normalize(position); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
       fragmentShader: `
         varying vec3 vSkyDirection;
         uniform float time;
         uniform float desertMix;
+        uniform float sunset;
         float hash(vec3 p){ return fract(sin(dot(p,vec3(127.1,311.7,74.7)))*43758.5453); }
         void main(){
           vec3 d=normalize(vSkyDirection);
           float horizon=pow(clamp(1.0-abs(d.y+0.08),0.0,1.0),5.0);
-          float stars=step(0.994,hash(floor(d*520.0)))*smoothstep(-0.05,0.25,d.y);
-          vec3 color=mix(vec3(0.001,0.002,0.012),vec3(0.05,0.012,0.13),max(d.y,0.0));
-          color+=horizon*vec3(0.48,0.018,0.4);
-          color+=stars*mix(vec3(0.1,0.8,1.0),vec3(1.0,0.1,0.5),hash(floor(d*311.0)))*2.4*(1.0-desertMix);
+          float night=smoothstep(0.12,0.94,sunset);
+          float starSeed=hash(floor(d*520.0));
+          float stars=step(mix(1.0,0.9915,night),starSeed)*smoothstep(-0.05,0.25,d.y);
+          vec3 twilight=mix(vec3(0.018,0.003,0.055),vec3(0.19,0.018,0.31),max(d.y,0.0));
+          vec3 midnight=mix(vec3(0.001,0.002,0.012),vec3(0.018,0.012,0.085),max(d.y,0.0));
+          vec3 color=mix(twilight,midnight,night);
+          color+=horizon*mix(vec3(0.64,0.025,0.45),vec3(0.09,0.04,0.22),night);
+          color+=stars*mix(vec3(0.1,0.8,1.0),vec3(1.0,0.1,0.5),hash(floor(d*311.0)))*2.4*night;
           float desertHeight=clamp(d.y*0.72+0.38,0.0,1.0);
-          vec3 desertColor=mix(vec3(0.62,0.045,0.28),vec3(0.22,0.085,0.38),desertHeight);
-          desertColor+=horizon*vec3(0.9,0.12,0.32);
+          vec3 desertDusk=mix(vec3(0.62,0.045,0.28),vec3(0.22,0.085,0.38),desertHeight);
+          vec3 desertNight=mix(vec3(0.025,0.006,0.052),vec3(0.065,0.022,0.16),desertHeight);
+          vec3 desertColor=mix(desertDusk,desertNight,night);
+          desertColor+=horizon*mix(vec3(0.9,0.12,0.32),vec3(0.16,0.035,0.2),night);
           float cloudNoise=sin(d.x*18.0+d.z*9.0+sin(d.z*13.0)*1.7);
           float cloudBand=smoothstep(0.44,0.9,cloudNoise)*smoothstep(0.06,0.34,d.y)*(1.0-smoothstep(0.58,0.82,d.y));
-          desertColor+=cloudBand*vec3(0.75,0.16,0.42)*0.48;
+          desertColor+=cloudBand*mix(vec3(0.75,0.16,0.42),vec3(0.12,0.04,0.2),night)*0.48;
+          desertColor+=stars*mix(vec3(0.12,0.74,1.0),vec3(1.0,0.16,0.46),starSeed)*2.15*night;
           color=mix(color,desertColor,desertMix);
           gl_FragColor=vec4(color,1.0);
         }`,
@@ -484,40 +649,182 @@ export class DriveMode {
     this.sky.renderOrder = -20;
     this.root.add(this.sky);
 
+    this.sunGroup = new THREE.Group();
+    this.sunGroup.name = 'Drive setting sun';
+    this.sunGroup.position.set(0, 30, 0);
+    this.root.add(this.sunGroup);
+
     const haloMaterial = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       toneMapped: false,
+      uniforms: {
+        opacity: { value: 1 },
+      },
       vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
       fragmentShader: `
         varying vec2 vUv;
+        uniform float opacity;
         void main() {
           float radius = length((vUv - 0.5) * 2.0);
           float core = 1.0 - smoothstep(0.04, 0.98, radius);
           float halo = pow(core, 2.2) * 0.58;
           vec3 color = mix(vec3(0.28, 0.025, 0.48), vec3(0.9, 0.025, 0.42), core);
-          gl_FragColor = vec4(color * halo * 0.58, halo * 0.58);
+          gl_FragColor = vec4(color * halo * 0.58 * opacity, halo * 0.58 * opacity);
         }
       `,
     });
     this.sunHalo = new THREE.Mesh(new THREE.PlaneGeometry(92, 92), haloMaterial);
-    this.sunHalo.position.set(0, 28, -205.3);
-    this.root.add(this.sunHalo);
+    this.sunHalo.position.set(0, 0, -205.3);
+    this.sunGroup.add(this.sunHalo);
 
-    const sunMaterial = new THREE.MeshBasicMaterial({ color: '#ffd06e', fog: false });
+    const sunMaterial = new THREE.MeshBasicMaterial({
+      color: '#ffd06e',
+      fog: false,
+      transparent: true,
+    });
     this.sunDisc = new THREE.Mesh(new THREE.CircleGeometry(23, 64), sunMaterial);
-    this.sunDisc.position.set(0, 28, -205);
-    this.root.add(this.sunDisc);
+    this.sunDisc.position.set(0, 0, -205);
+    this.sunGroup.add(this.sunDisc);
     this.skyBiomeTo = gsap.quickTo(this.skyDesertMix, 'value', {
-      duration: this.prefersReducedMotion() ? 0.08 : 1.1,
+      duration: this.prefersReducedMotion() ? 0.08 : 1.4,
       ease: 'power2.inOut',
     });
-    const barMaterial = new THREE.MeshBasicMaterial({ color: '#18051f', fog: false });
+    this.skySunsetTo = gsap.quickTo(this.skySunset, 'value', {
+      duration: this.prefersReducedMotion() ? 0.08 : 1.4,
+      ease: 'power2.out',
+    });
+    this.sunXTo = gsap.quickTo(this.sunGroup.position, 'x', {
+      duration: this.prefersReducedMotion() ? 0.08 : 1.5,
+      ease: 'power2.out',
+    });
+    this.sunYTo = gsap.quickTo(this.sunGroup.position, 'y', {
+      duration: this.prefersReducedMotion() ? 0.08 : 1.5,
+      ease: 'power2.out',
+    });
+    this.sunOpacityTo = gsap.quickTo(sunMaterial, 'opacity', {
+      duration: this.prefersReducedMotion() ? 0.08 : 1.25,
+      ease: 'power2.out',
+    });
+    this.haloOpacityTo = gsap.quickTo(haloMaterial.uniforms.opacity, 'value', {
+      duration: this.prefersReducedMotion() ? 0.08 : 1.25,
+      ease: 'power2.out',
+    });
+    const barMaterial = new THREE.MeshBasicMaterial({
+      color: '#18051f',
+      fog: false,
+      transparent: true,
+    });
+    this.sunBarMaterial = barMaterial;
     for (let i = 0; i < 6; i++) {
       const bar = new THREE.Mesh(new THREE.PlaneGeometry(49, 1.05 + i * 0.11), barMaterial);
-      bar.position.set(0, 18 + i * 3.2, -204.8);
-      this.root.add(bar);
+      bar.position.set(0, -10 + i * 3.2, -204.8);
+      this.sunGroup.add(bar);
+    }
+    this.sunBarsOpacityTo = gsap.quickTo(barMaterial, 'opacity', {
+      duration: this.prefersReducedMotion() ? 0.08 : 1.25,
+      ease: 'power2.out',
+    });
+
+    this.fogColors = {
+      twilight: new THREE.Color('#3b123f'),
+      night: new THREE.Color('#080b1c'),
+      desertTwilight: new THREE.Color('#6a203f'),
+      desertNight: new THREE.Color('#190a25'),
+      target: new THREE.Color(),
+      city: new THREE.Color(),
+      desert: new THREE.Color(),
+    };
+    if (this.scene.fog?.isFog) {
+      const duration = this.prefersReducedMotion() ? 0.08 : 1.5;
+      this.fogNearTo = gsap.quickTo(this.scene.fog, 'near', { duration, ease: 'power2.out' });
+      this.fogFarTo = gsap.quickTo(this.scene.fog, 'far', { duration, ease: 'power2.out' });
+      this.fogRTo = gsap.quickTo(this.scene.fog.color, 'r', { duration, ease: 'power2.out' });
+      this.fogGTo = gsap.quickTo(this.scene.fog.color, 'g', { duration, ease: 'power2.out' });
+      this.fogBTo = gsap.quickTo(this.scene.fog.color, 'b', { duration, ease: 'power2.out' });
+    }
+  }
+
+  updateAtmosphere(section, { immediate = false } = {}) {
+    const dayProgress = THREE.MathUtils.clamp(
+      this.state.distance / (DRIVE_CYCLE_LENGTH * 1.08),
+      0,
+      1,
+    );
+    const sunset = smootherStep01(dayProgress);
+    const stars = smootherStep01((sunset - 0.12) / 0.88);
+    const desertBlend = desertBlendAtCycleDistance(section.cycleDistance);
+    const coastArrival = smootherStep01(
+      (section.cycleDistance - (COAST_APPROACH_START - 80))
+      / (COAST_RUN_START + 65 - (COAST_APPROACH_START - 80)),
+    );
+    const coastDeparture = 1 - smootherStep01(
+      (section.cycleDistance - COAST_RETURN_START)
+      / (DESERT_RUN_START - COAST_RETURN_START),
+    );
+    const coastBlend = THREE.MathUtils.clamp(coastArrival * coastDeparture, 0, 1);
+    const sunY = THREE.MathUtils.lerp(30, -15, sunset);
+    const sunX = THREE.MathUtils.lerp(-5, 12, sunset);
+    const sunOpacity = 1 - smootherStep01((sunset - 0.73) / 0.27);
+    const fogNear = THREE.MathUtils.lerp(36, 24, stars) - coastBlend * 3;
+    const fogFar = THREE.MathUtils.lerp(205, 158, stars)
+      + desertBlend * 28
+      - coastBlend * 12;
+
+    Object.assign(this.state, {
+      sunset,
+      starVisibility: stars,
+      desertBlend,
+      coastBlend,
+      fogNear,
+      fogFar,
+    });
+
+    this.fogColors.city.lerpColors(
+      this.fogColors.twilight,
+      this.fogColors.night,
+      sunset,
+    );
+    this.fogColors.desert.lerpColors(
+      this.fogColors.desertTwilight,
+      this.fogColors.desertNight,
+      sunset,
+    );
+    this.fogColors.target.copy(this.fogColors.city).lerp(
+      this.fogColors.desert,
+      desertBlend,
+    );
+
+    if (immediate) {
+      this.skyDesertMix.value = desertBlend;
+      this.skySunset.value = sunset;
+      this.sunGroup.position.x = sunX;
+      this.sunGroup.position.y = sunY;
+      this.sunDisc.material.opacity = sunOpacity;
+      this.sunHalo.material.uniforms.opacity.value = sunOpacity;
+      this.sunBarMaterial.opacity = sunOpacity;
+      if (this.root.visible && this.scene.fog?.isFog) {
+        this.scene.fog.near = fogNear;
+        this.scene.fog.far = fogFar;
+        this.scene.fog.color.copy(this.fogColors.target);
+      }
+      return;
+    }
+
+    this.skyBiomeTo?.(desertBlend);
+    this.skySunsetTo?.(sunset);
+    this.sunXTo?.(sunX);
+    this.sunYTo?.(sunY);
+    this.sunOpacityTo?.(sunOpacity);
+    this.haloOpacityTo?.(sunOpacity);
+    this.sunBarsOpacityTo?.(sunOpacity);
+    if (this.root.visible && this.scene.fog?.isFog) {
+      this.fogNearTo?.(fogNear);
+      this.fogFarTo?.(fogFar);
+      this.fogRTo?.(this.fogColors.target.r);
+      this.fogGTo?.(this.fogColors.target.g);
+      this.fogBTo?.(this.fogColors.target.b);
     }
   }
 
@@ -525,14 +832,18 @@ export class DriveMode {
     this.roadEnvironment = new THREE.Group();
     this.roadEnvironment.name = 'Drive road deck and neon edges';
     this.root.add(this.roadEnvironment);
+    this.asphaltNormalMap = createAsphaltNormalTexture(this.isMobile ? 64 : 128);
     const roadMaterial = this.patchBend(new THREE.MeshPhysicalMaterial({
-      color: '#010207', roughness: 0.2, metalness: 0.12,
-      clearcoat: 1, clearcoatRoughness: 0.035, envMapIntensity: 0.72,
+      color: '#010207', roughness: 0.72, metalness: 0.08,
+      clearcoat: 0.24, clearcoatRoughness: 0.3, envMapIntensity: 0.9,
       specularIntensity: 1, ior: 1.46,
+      normalMap: this.asphaltNormalMap,
+      normalScale: new THREE.Vector2(0.24, 0.24),
     }), 'wet-road', 'road');
+    this.roadMaterial = roadMaterial;
     const roadGeometry = new THREE.BoxGeometry(12, 0.24, 320, 1, 1, this.isMobile ? 80 : 144);
     this.road = new THREE.Mesh(roadGeometry, roadMaterial);
-    this.road.position.set(0, -0.16, -141);
+    this.road.position.set(0, ROAD_SURFACE_Y - 0.12, -141);
     this.road.frustumCulled = false;
     this.road.receiveShadow = true;
     this.roadEnvironment.add(this.road);
@@ -736,7 +1047,7 @@ export class DriveMode {
     this.root.add(this.car);
 
     this.vehicleLiftRig = new THREE.Group();
-    this.vehicleLiftRig.name = 'GSAP amphibious jump presentation';
+    this.vehicleLiftRig.name = 'GSAP car jump presentation';
     this.carMotionRig = new THREE.Group();
     this.carMotionRig.name = 'GSAP lane and hover presentation';
     this.carImpactRig = new THREE.Group();
@@ -749,15 +1060,15 @@ export class DriveMode {
     this.carImpactRig.add(this.carVisualRig);
 
     const paint = new THREE.MeshPhysicalMaterial({
-      color: '#020106', metalness: 0.62, roughness: 0.2,
-      clearcoat: 0.9, clearcoatRoughness: 0.075, envMapIntensity: 0.045,
-      specularIntensity: 0.42, ior: 1.32,
-      iridescence: 0.42, iridescenceIOR: 1.8,
+      color: '#010104', metalness: 0.52, roughness: 0.29,
+      clearcoat: 0.64, clearcoatRoughness: 0.14, envMapIntensity: 0.025,
+      specularIntensity: 0.28, ior: 1.28,
+      iridescence: 0.24, iridescenceIOR: 1.72,
     });
     const glass = new THREE.MeshPhysicalMaterial({
-      color: '#000103', metalness: 0.05, roughness: 0.16,
-      clearcoat: 0.68, clearcoatRoughness: 0.08, envMapIntensity: 0.015,
-      specularIntensity: 0.1, ior: 1.18,
+      color: '#000103', metalness: 0.04, roughness: 0.24,
+      clearcoat: 0.32, clearcoatRoughness: 0.18, envMapIntensity: 0.008,
+      specularIntensity: 0.06, ior: 1.16,
     });
     const tire = new THREE.MeshStandardMaterial({ color: '#030307', roughness: 0.72, metalness: 0.15 });
     const cyan = new THREE.MeshBasicMaterial({ color: '#20e8ff', toneMapped: false });
@@ -823,7 +1134,7 @@ export class DriveMode {
 
   createTransitionRamps() {
     this.transitionGroup = new THREE.Group();
-    this.transitionGroup.name = 'Amphibious transition ramps';
+    this.transitionGroup.name = 'Coastal road jump ramps';
     this.root.add(this.transitionGroup);
 
     const deckMaterial = this.patchBend(new THREE.MeshPhysicalMaterial({
@@ -834,66 +1145,78 @@ export class DriveMode {
       metalness: 0.58,
       clearcoat: 1,
       clearcoatRoughness: 0.08,
-    }), 'amphibious-ramp-deck');
+    }), 'coast-ramp-deck');
     const cyan = this.patchBend(new THREE.MeshBasicMaterial({
       color: '#28f6ff', toneMapped: false,
-    }), 'amphibious-ramp-cyan');
+    }), 'coast-ramp-cyan');
     const magenta = this.patchBend(new THREE.MeshBasicMaterial({
       color: '#ff1c93', toneMapped: false,
-    }), 'amphibious-ramp-magenta');
+    }), 'coast-ramp-magenta');
 
     const makeRamp = (name, accentMaterial) => {
       const group = new THREE.Group();
       group.name = name;
       const deck = new THREE.Mesh(
-        new THREE.BoxGeometry(11.8, 0.5, 15, 1, 1, this.isMobile ? 12 : 24),
+        new THREE.BoxGeometry(11.8, 0.5, RAMP_LENGTH, 1, 1, this.isMobile ? 12 : 24),
         deckMaterial,
       );
-      deck.position.y = 0.72;
-      deck.rotation.x = -0.135;
+      deck.position.y = RAMP_CENTER_Y;
+      deck.rotation.x = RAMP_TILT;
       deck.castShadow = true;
       deck.receiveShadow = true;
       group.add(deck);
 
       for (const side of [-1, 1]) {
-        const rail = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.18, 15), side < 0 ? cyan : magenta);
-        rail.position.set(side * 5.78, 1.02, 0);
-        rail.rotation.x = -0.135;
+        const rail = new THREE.Mesh(
+          new THREE.BoxGeometry(0.14, 0.18, RAMP_LENGTH),
+          side < 0 ? cyan : magenta,
+        );
+        rail.position.set(side * 5.78, 1.06, 0);
+        rail.rotation.x = RAMP_TILT;
         group.add(rail);
       }
       for (let index = 0; index < 5; index++) {
+        const chevronZ = 4.7 - index * 2.35;
+        const rampSurfaceY = RAMP_CENTER_Y
+          - chevronZ * Math.sin(RAMP_TILT)
+          + Math.cos(RAMP_TILT) * 0.25;
         const chevron = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.045, 0.18), accentMaterial);
-        chevron.position.set(0, 1.08 + index * 0.08, 4.7 - index * 2.35);
-        chevron.rotation.x = -0.135;
+        chevron.position.set(0, rampSurfaceY + 0.035, chevronZ);
+        chevron.rotation.x = RAMP_TILT;
         group.add(chevron);
       }
       const portal = new THREE.Group();
-      const portalPostGeometry = new THREE.BoxGeometry(0.22, 5.8, 0.24);
+      const portalZ = -5.4;
+      const portalSurfaceY = RAMP_CENTER_Y
+        - portalZ * Math.sin(RAMP_TILT)
+        + Math.cos(RAMP_TILT) * 0.25;
+      const portalHeight = 4.1;
+      const portalPostGeometry = new THREE.BoxGeometry(0.22, portalHeight, 0.24);
       for (const side of [-1, 1]) {
         const post = new THREE.Mesh(portalPostGeometry, side < 0 ? cyan : magenta);
-        post.position.set(side * 6.05, 3.0, -5.4);
+        post.position.set(side * 6.05, portalSurfaceY + portalHeight * 0.5, portalZ);
         portal.add(post);
       }
       const header = new THREE.Mesh(new THREE.BoxGeometry(12.3, 0.24, 0.24), accentMaterial);
-      header.position.set(0, 5.86, -5.4);
+      header.position.set(0, portalSurfaceY + portalHeight, portalZ);
       portal.add(header);
       group.add(portal);
       this.transitionGroup.add(group);
       return group;
     };
 
-    this.entryRamp = makeRamp('Road to canal launch ramp', cyan);
-    this.exitRamp = makeRamp('Canal to road launch ramp', magenta);
+    this.entryRamp = makeRamp('City to coastal hotel jump ramp', cyan);
+    this.exitRamp = makeRamp('Coastal causeway jump ramp', magenta);
   }
 
-  createMorphEffects() {
-    this.morphFxGroup = new THREE.Group();
-    this.morphFxGroup.name = 'GSAP amphibious transformation energy';
-    this.morphFxGroup.position.y = 0.85;
-    this.morphFxGroup.visible = false;
-    this.carImpactRig.add(this.morphFxGroup);
+  createJumpEffects() {
+    this.jumpFxGroup = new THREE.Group();
+    this.jumpFxGroup.name = 'GSAP ramp jump boost energy';
+    this.jumpFxGroup.position.y = 0.85;
+    this.jumpFxGroup.visible = false;
+    this.carImpactRig.add(this.jumpFxGroup);
 
-    this.morphCoreMaterial = new THREE.MeshBasicMaterial({
+    this.jumpCoreMaterial = new THREE.MeshBasicMaterial({
       color: '#f3ffff',
       transparent: true,
       opacity: 0,
@@ -902,11 +1225,11 @@ export class DriveMode {
       toneMapped: false,
       side: THREE.DoubleSide,
     });
-    const core = new THREE.Mesh(new THREE.SphereGeometry(1.72, 18, 12), this.morphCoreMaterial);
+    const core = new THREE.Mesh(new THREE.SphereGeometry(1.72, 18, 12), this.jumpCoreMaterial);
     core.scale.set(1.1, 0.62, 1.45);
-    this.morphFxGroup.add(core);
+    this.jumpFxGroup.add(core);
 
-    this.morphRingMaterials = ['#25efff', '#ff2d9b'].map((color) => new THREE.MeshBasicMaterial({
+    this.jumpRingMaterials = ['#25efff', '#ff2d9b'].map((color) => new THREE.MeshBasicMaterial({
       color,
       transparent: true,
       opacity: 0,
@@ -915,73 +1238,30 @@ export class DriveMode {
       toneMapped: false,
       side: THREE.DoubleSide,
     }));
-    this.morphRingMaterials.forEach((material, index) => {
+    this.jumpRingMaterials.forEach((material, index) => {
       const ring = new THREE.Mesh(new THREE.TorusGeometry(2.05 + index * 0.32, 0.045, 8, 42), material);
       ring.rotation.set(index ? 0.45 : -0.32, index ? 0.25 : -0.22, index * Math.PI / 2);
-      this.morphFxGroup.add(ring);
+      this.jumpFxGroup.add(ring);
     });
   }
 
-  createVehicleMorphTimelines() {
+  createJumpTimelines() {
     this.vehiclePose = {
       lift: 0,
       pitch: 0,
       roll: 0,
-      carScale: 1,
-      carSpin: 0,
-      boatScale: 0.001,
-      boatSpin: -Math.PI,
-      morphEnergy: 0,
+      jumpEnergy: 0,
     };
-    this.entryMorphTimeline = gsap.timeline({ paused: true });
-    this.entryMorphTimeline
+    this.entryJumpTimeline = gsap.timeline({ paused: true });
+    this.entryJumpTimeline
       .fromTo(this.vehiclePose, {
-        lift: 0, pitch: 0, roll: 0,
-        carScale: 1, carSpin: 0,
-        boatScale: 0.001, boatSpin: -0.9,
-        morphEnergy: 0,
+        lift: RAMP_LAUNCH_HEIGHT, pitch: RAMP_TILT, roll: 0,
+        jumpEnergy: 0,
       }, {
         lift: this.prefersReducedMotion() ? 1.4 : 3.4,
-        pitch: this.prefersReducedMotion() ? -0.09 : -0.28,
-        roll: this.prefersReducedMotion() ? 0 : 0.08,
-        carScale: 0.24,
-        carSpin: this.prefersReducedMotion() ? 0.12 : 0.58,
-        boatScale: 0.58,
-        boatSpin: this.prefersReducedMotion() ? -0.12 : -0.72,
-        morphEnergy: 1,
-        duration: 0.48,
-        ease: 'power2.out',
-        immediateRender: false,
-      })
-      .to(this.vehiclePose, {
-        lift: 0.12,
-        pitch: 0,
-        roll: 0,
-        carScale: 0.001,
-        carSpin: 0.9,
-        boatScale: 1,
-        boatSpin: 0,
-        morphEnergy: 0,
-        duration: 0.52,
-        ease: 'power2.in',
-      });
-
-    this.exitMorphTimeline = gsap.timeline({ paused: true });
-    this.exitMorphTimeline
-      .fromTo(this.vehiclePose, {
-        lift: 0.12, pitch: 0, roll: 0,
-        carScale: 0.001, carSpin: 0.9,
-        boatScale: 1, boatSpin: 0,
-        morphEnergy: 0,
-      }, {
-        lift: this.prefersReducedMotion() ? 1.4 : 3.25,
-        pitch: this.prefersReducedMotion() ? -0.08 : -0.25,
-        roll: this.prefersReducedMotion() ? 0 : -0.08,
-        carScale: 0.58,
-        carSpin: this.prefersReducedMotion() ? 0.12 : -0.7,
-        boatScale: 0.24,
-        boatSpin: this.prefersReducedMotion() ? 0.12 : 0.62,
-        morphEnergy: 1,
+        pitch: this.prefersReducedMotion() ? -0.06 : -0.18,
+        roll: this.prefersReducedMotion() ? 0 : 0.055,
+        jumpEnergy: 1,
         duration: 0.48,
         ease: 'power2.out',
         immediateRender: false,
@@ -990,87 +1270,125 @@ export class DriveMode {
         lift: 0,
         pitch: 0,
         roll: 0,
-        carScale: 1,
-        carSpin: 0,
-        boatScale: 0.001,
-        boatSpin: 0.9,
-        morphEnergy: 0,
+        jumpEnergy: 0,
         duration: 0.52,
         ease: 'power2.in',
       });
-    this.syncVehiclePose(driveSectionAtDistance(0));
+
+    this.exitJumpTimeline = gsap.timeline({ paused: true });
+    this.exitJumpTimeline
+      .fromTo(this.vehiclePose, {
+        lift: RAMP_LAUNCH_HEIGHT, pitch: RAMP_TILT, roll: 0,
+        jumpEnergy: 0,
+      }, {
+        lift: this.prefersReducedMotion() ? 1.4 : 3.25,
+        pitch: this.prefersReducedMotion() ? -0.05 : -0.16,
+        roll: this.prefersReducedMotion() ? 0 : -0.055,
+        jumpEnergy: 1,
+        duration: 0.48,
+        ease: 'power2.out',
+        immediateRender: false,
+      })
+      .to(this.vehiclePose, {
+        lift: 0,
+        pitch: 0,
+        roll: 0,
+        jumpEnergy: 0,
+        duration: 0.52,
+        ease: 'power2.in',
+      });
+    this.syncJumpPose(driveSectionAtDistance(0));
   }
 
-  applyVehiclePose(section) {
+  applyJumpPose() {
     const pose = this.vehiclePose;
     this.vehicleLiftRig.position.y = pose.lift;
     this.vehicleLiftRig.rotation.set(pose.pitch, 0, pose.roll);
-    this.carVisualRig.scale.setScalar(Math.max(0.001, pose.carScale));
-    this.carVisualRig.rotation.y = pose.carSpin;
-    if (this.boatRig) {
-      this.boatRig.scale.setScalar(Math.max(0.001, pose.boatScale));
-      this.boatRig.rotation.y = pose.boatSpin;
-      this.boatRig.visible = section.phase === 'canal'
-        || section.phase === 'canal-entry'
-        || section.phase === 'canal-exit';
-    }
-    this.carVisualRig.visible = section.phase !== 'canal';
-    if (this.morphFxGroup) {
-      const energy = THREE.MathUtils.clamp(pose.morphEnergy, 0, 1);
-      this.morphFxGroup.visible = energy > 0.01;
-      this.morphFxGroup.scale.setScalar(0.62 + energy * 0.5);
-      this.morphFxGroup.rotation.z = energy * 0.72;
-      this.morphCoreMaterial.opacity = energy * (this.prefersReducedMotion() ? 0.12 : 0.23);
-      this.morphRingMaterials[0].opacity = energy * 0.74;
-      this.morphRingMaterials[1].opacity = energy * 0.5;
+    this.carVisualRig.visible = true;
+    this.carVisualRig.scale.setScalar(1);
+    this.carVisualRig.rotation.y = 0;
+    if (this.jumpFxGroup) {
+      const energy = THREE.MathUtils.clamp(pose.jumpEnergy, 0, 1);
+      this.jumpFxGroup.visible = energy > 0.01;
+      this.jumpFxGroup.scale.setScalar(0.62 + energy * 0.5);
+      this.jumpFxGroup.rotation.z = energy * 0.72;
+      this.jumpCoreMaterial.opacity = energy * (this.prefersReducedMotion() ? 0.07 : 0.14);
+      this.jumpRingMaterials[0].opacity = energy * 0.58;
+      this.jumpRingMaterials[1].opacity = energy * 0.38;
     }
   }
 
-  syncVehiclePose(section) {
+  syncJumpPose(section) {
     if (!this.vehiclePose) return;
-    if (section.phase === 'canal-entry') {
-      this.entryMorphTimeline.progress(section.progress, true);
-    } else if (section.phase === 'canal') {
+    const entryRampElevation = rampElevationBeforeMarker(
+      section.cycleDistance,
+      COAST_ENTRY_START,
+    );
+    const exitRampElevation = rampElevationBeforeMarker(
+      section.cycleDistance,
+      COAST_EXIT_START,
+    );
+    this.state.transitionElevation = 0;
+    if (section.phase === 'coast-entry') {
+      this.state.transitionElevation = RAMP_LAUNCH_HEIGHT
+        * (1 - smootherStep01(section.progress / 0.22));
+      this.entryJumpTimeline.progress(section.progress, true);
+    } else if (section.phase === 'coast-approach') {
+      this.state.transitionElevation = entryRampElevation;
       Object.assign(this.vehiclePose, {
-        lift: 0.12, pitch: 0, roll: 0,
-        carScale: 0.001, carSpin: Math.PI,
-        boatScale: 1, boatSpin: 0, morphEnergy: 0,
+        lift: entryRampElevation,
+        pitch: entryRampElevation > 0.001 ? RAMP_TILT : 0,
+        roll: 0,
+        jumpEnergy: 0,
       });
-    } else if (section.phase === 'canal-exit') {
-      this.exitMorphTimeline.progress(section.progress, true);
+    } else if (section.phase === 'coast') {
+      this.state.transitionElevation = exitRampElevation;
+      Object.assign(this.vehiclePose, {
+        lift: exitRampElevation,
+        pitch: exitRampElevation > 0.001 ? RAMP_TILT : 0,
+        roll: 0,
+        jumpEnergy: 0,
+      });
+    } else if (section.phase === 'coast-exit') {
+      this.state.transitionElevation = RAMP_LAUNCH_HEIGHT
+        * (1 - smootherStep01(section.progress / 0.22));
+      this.exitJumpTimeline.progress(section.progress, true);
     } else {
       Object.assign(this.vehiclePose, {
         lift: 0, pitch: 0, roll: 0,
-        carScale: 1, carSpin: 0,
-        boatScale: 0.001, boatSpin: -0.9, morphEnergy: 0,
+        jumpEnergy: 0,
       });
     }
-    this.applyVehiclePose(section);
+    this.applyJumpPose();
   }
 
   updateTransitionRamps(section) {
     const localDistance = section.cycleDistance;
-    const entryDelta = CANAL_ENTRY_START - localDistance;
-    const exitDelta = CANAL_EXIT_START - localDistance;
-    this.entryRamp.position.z = CAR_Z - entryDelta;
-    this.exitRamp.position.z = CAR_Z - exitDelta;
-    this.entryRamp.visible = localDistance > CANAL_APPROACH_START - 110 && localDistance < CANAL_RUN_START + 28;
-    this.exitRamp.visible = localDistance > CANAL_EXIT_START - 145 && localDistance < CANAL_RETURN_START + 32;
-    this.transitionGroup.visible = this.entryRamp.visible || this.exitRamp.visible;
+    const entryDelta = COAST_ENTRY_START - localDistance;
+    const exitDelta = COAST_EXIT_START - localDistance;
+    // At each marker the high/front edge (local -Z) reaches the fixed car.
+    // This makes the deck climb in the travel direction and launch cleanly.
+    this.entryRamp.position.z = CAR_Z + RAMP_HALF_LENGTH - entryDelta;
+    this.exitRamp.position.z = CAR_Z + RAMP_HALF_LENGTH - exitDelta;
+    this.entryRamp.visible = localDistance > COAST_ENTRY_START - 72
+      && localDistance < COAST_ENTRY_START + 0.65;
+    this.exitRamp.visible = localDistance > COAST_EXIT_START - 96
+      && localDistance < COAST_EXIT_START + 0.65;
+    this.transitionGroup.visible = this.entryRamp.visible
+      || this.exitRamp.visible;
   }
 
   createLights() {
-    this.root.add(new THREE.HemisphereLight('#2a2358', '#010105', 0.22));
-    const cyanLight = new THREE.PointLight('#19dfff', 5.2, 18, 2);
+    this.root.add(new THREE.HemisphereLight('#2a2358', '#010105', 0.15));
+    const cyanLight = new THREE.PointLight('#19dfff', 2.35, 16, 2);
     cyanLight.position.set(-5, 3.5, 7);
-    const magentaLight = new THREE.PointLight('#ff127f', 6.4, 20, 2);
+    const magentaLight = new THREE.PointLight('#ff127f', 2.9, 18, 2);
     magentaLight.position.set(5, 3.2, 4);
     this.root.add(cyanLight, magentaLight);
   }
 
   applySectionState(section, { emit = false } = {}) {
     const previousPhase = this.state.phase;
-    const previousBiome = this.state.biome;
     const previousBridgeVariant = this.state.bridgeVariant;
     Object.assign(this.state, {
       phase: section.phase,
@@ -1093,29 +1411,29 @@ export class DriveMode {
     // match a positive forward bridge grade.
     this.car.rotation.x = section.roadGrade;
 
-    const canalVisible = CANAL_PHASES.has(section.phase);
-    const desertVisible = DESERT_PHASES.has(section.phase);
+    const coastalVisible = COAST_SCENERY_PHASES.has(section.phase);
+    const desertVisible = DESERT_PHASES.has(section.phase)
+      || (
+        section.phase === 'coast-departure'
+        && section.cycleDistance >= 970
+      );
     const bridgeVisible = BRIDGE_PHASES.has(section.phase);
-    const exitRoadVisible = section.phase === 'canal-exit' && section.progress >= 0.44;
-    const roadVisible = section.phase === 'city'
-      || section.phase === 'canal-approach'
-      || exitRoadVisible
-      || desertVisible;
+    const roadVisible = !bridgeVisible;
     const cityVisible = section.phase === 'city'
-      || section.phase === 'canal-approach'
-      || exitRoadVisible;
-    if (previousPhase === 'city' && section.phase === 'canal-approach') {
-      this.canalSection.reset();
+      || section.phase === 'coast-approach'
+      || section.phase === 'coast-entry';
+    if (coastalVisible && !COAST_SCENERY_PHASES.has(previousPhase)) {
+      this.coastalSection.reset();
     }
-    if (previousPhase === 'canal-exit' && section.phase === 'city') {
-      // The hidden city pool keeps recycling during the canal. Re-seed its
-      // collision lane well ahead of the car so the restored road always
-      // gives the player a readable reaction window.
+    if (
+      (previousPhase === 'coast-entry' && section.phase === 'coast')
+      || (previousPhase === 'coast-exit' && section.phase === 'coast-departure')
+    ) {
       this.runnerObjects.forEach((object, index) => {
         this.recycleRunnerObject(object, -42 - index * 19);
       });
     }
-    if (desertVisible && !DESERT_PHASES.has(previousPhase)) {
+    if (desertVisible && !this.desertSection.active) {
       this.desertSection.reset();
     }
     if (bridgeVisible && (!BRIDGE_PHASES.has(previousPhase)
@@ -1131,7 +1449,7 @@ export class DriveMode {
     this.terrainGroup.visible = cityVisible;
     this.cityGroup.visible = cityVisible;
     this.runnerGroup.visible = section.collisionProfile === 'road';
-    this.canalSection.setActive(canalVisible);
+    this.coastalSection.setActive(coastalVisible);
     this.desertSection.setActive(desertVisible);
     this.bridgeSection.setActive(bridgeVisible);
     this.roadsideProps.setActive(ROADSIDE_PHASES.has(section.phase));
@@ -1144,27 +1462,24 @@ export class DriveMode {
       });
     }
     this.updateTransitionRamps(section);
-    this.syncVehiclePose(section);
+    this.syncJumpPose(section);
     this.visualGains?.setSurface?.(section.surface);
-    const skyTarget = section.biome === 'desert' ? 1 : (section.biome === 'bridge' ? 0.78 : 0);
-    if (!emit) this.skyDesertMix.value = skyTarget;
-    else if (previousBiome !== section.biome) this.skyBiomeTo?.(skyTarget);
+    this.updateAtmosphere(section, { immediate: !emit });
 
     if (emit && previousPhase !== section.phase) {
       const eventByPhase = {
-        'canal-approach': 'canal-ahead',
-        'canal-entry': 'entry-takeoff',
-        canal: 'boat-deployed',
-        'canal-exit': 'exit-takeoff',
+        'coast-approach': 'coast-ahead',
+        'coast-entry': 'entry-jump',
+        coast: 'coast-entered',
+        'coast-exit': 'exit-jump',
+        'coast-departure': 'coast-returned',
         'desert-approach': 'desert-ahead',
         desert: 'desert-entered',
         'bridge-climb': 'bridge-climb',
         'bridge-span': 'bridge-span',
         'bridge-descent': 'bridge-descent',
         'desert-return': 'desert-returned',
-        city: previousPhase === 'canal-exit'
-          ? 'car-restored'
-          : (previousPhase === 'desert-return' ? 'city-returned' : 'city-loop'),
+        city: previousPhase === 'desert-return' ? 'city-returned' : 'city-loop',
       };
       this.onSectionChange({
         event: eventByPhase[section.phase],
@@ -1180,7 +1495,7 @@ export class DriveMode {
     const startSection = driveSectionAtDistance(safeStartDistance);
     Object.assign(this.state, {
       laneIndex: 1, targetLane: 1, lateralX: 0, distance: safeStartDistance, speed: 0,
-      shards: 0, orbs: 0, score: Math.floor(safeStartDistance * 2),
+      shards: 0, score: Math.floor(safeStartDistance * 2),
       elapsed: 0, crashed: false, laneChanges: 0,
       phase: startSection.phase,
       sectionLabel: startSection.label,
@@ -1196,6 +1511,7 @@ export class DriveMode {
       bridgeVariant: startSection.bridgeVariant,
       bridgeProgress: startSection.bridgeProgress,
       collisionProfile: startSection.collisionProfile,
+      transitionElevation: 0,
     });
     this.car.position.set(0, 0.06 + startSection.roadElevation, CAR_Z);
     this.car.rotation.set(0, 0, 0);
@@ -1219,7 +1535,7 @@ export class DriveMode {
     this.carImpactRig.scale.setScalar(1);
     this.underglow.material.opacity = 0.26;
     this.visualGains?.reset();
-    this.canalSection.reset();
+    this.coastalSection.reset();
     this.desertSection.reset();
     this.bridgeSection.reset({ variant: startSection.bridgeVariant });
     this.roadsideProps.reset({ biome: startSection.biome });
@@ -1229,6 +1545,10 @@ export class DriveMode {
     this.runnerObjects.forEach((object, index) => this.recycleRunnerObject(object, -34 - index * 19));
     this.bendUniforms.uDriveTravel.value = safeStartDistance;
     this.bendUniforms.uBendX.value = 0.00018;
+    this.asphaltNormalMap.offset.y = THREE.MathUtils.euclideanModulo(
+      -safeStartDistance / 4,
+      1,
+    );
     this.updateTerrain(true);
     this.applySectionState(startSection);
     if (DESERT_PHASES.has(startSection.phase)) {
@@ -1245,7 +1565,7 @@ export class DriveMode {
   setVisible(visible) {
     this.root.visible = visible;
     this.carIdleTimeline?.paused(!visible);
-    this.canalSection?.setActive(Boolean(visible && CANAL_PHASES.has(this.state.phase)));
+    this.coastalSection?.setActive(Boolean(visible && COAST_SCENERY_PHASES.has(this.state.phase)));
     this.desertSection?.setActive(Boolean(visible && DESERT_PHASES.has(this.state.phase)));
     this.bridgeSection?.setActive(Boolean(visible && BRIDGE_PHASES.has(this.state.phase)));
     this.roadsideProps?.setActive(Boolean(visible && ROADSIDE_PHASES.has(this.state.phase)));
@@ -1303,26 +1623,6 @@ export class DriveMode {
       });
   }
 
-  handleCanalCollect(event) {
-    if (this.state.crashed || this.state.phase !== 'canal') return;
-    this.state.orbs += 1;
-    // Keep the legacy pickup total and record key compatible while exposing
-    // water orbs independently in semantic state and the adaptive HUD.
-    this.state.shards += 1;
-    this.state.score = Math.floor(this.state.distance * 2 + this.state.shards * 125);
-    const origin = new THREE.Vector3(LANE_X[event.lane], 0.65, event.z);
-    this.visualGains?.collect(origin);
-    this.onCollect(this.state, 'orb');
-  }
-
-  handleCanalCrash(event) {
-    if (this.state.crashed || this.state.phase !== 'canal') return;
-    this.state.crashed = true;
-    this.state.speed = 0;
-    this.animateCrash();
-    this.onCrash(this.state, event.kind);
-  }
-
   animateCrash() {
     this.laneTimeline?.kill();
     this.impactTimeline?.kill();
@@ -1349,7 +1649,7 @@ export class DriveMode {
     this.bendUniforms.uDriveTime.value += dt;
     this.terrainAccumulator += dt;
     if (!active || this.state.crashed) {
-      this.canalSection.update(dt, { active: false });
+      this.coastalSection.update(dt, { active: false });
       this.desertSection.update(dt, { active: false });
       this.bridgeSection.update(dt, {
         active: false,
@@ -1375,13 +1675,21 @@ export class DriveMode {
     const section = driveSectionAtDistance(this.state.distance);
     this.applySectionState(section, { emit: true });
     const roadGameplayActive = section.collisionProfile === 'road';
-    const canalGameplayActive = section.phase === 'canal';
+    const desertSceneryActive = DESERT_PHASES.has(section.phase)
+      || (
+        section.phase === 'coast-departure'
+        && section.cycleDistance >= 970
+      );
     const targetX = LANE_X[this.state.targetLane];
     this.state.lateralX = smoothDamp(this.state.lateralX, targetX, 11.5, dt);
     this.car.position.x = this.state.lateralX;
     if (Math.abs(this.state.lateralX - targetX) < 0.08) this.state.laneIndex = this.state.targetLane;
 
     this.bendUniforms.uDriveTravel.value = this.state.distance;
+    this.asphaltNormalMap.offset.y = THREE.MathUtils.euclideanModulo(
+      -this.state.distance / 4,
+      1,
+    );
     this.bendUniforms.uBendX.value = Math.sin(this.state.distance * 0.0042) * 0.00031 + Math.sin(this.state.distance * 0.0013 + 1.4) * 0.00011;
     this.bendUniforms.uBendY.value = 0.00122 + Math.sin(this.state.distance * 0.0018) * 0.00013;
 
@@ -1431,16 +1739,13 @@ export class DriveMode {
       }
     }
 
-    this.canalSection.update(dt, {
+    this.coastalSection.update(dt, {
       advance,
-      lateralX: this.state.lateralX,
-      speed: this.state.speed,
-      active: CANAL_PHASES.has(section.phase),
-      collisionsEnabled: canalGameplayActive,
+      active: COAST_SCENERY_PHASES.has(section.phase),
     });
     this.desertSection.update(dt, {
       advance,
-      active: DESERT_PHASES.has(section.phase),
+      active: desertSceneryActive,
     });
     this.bridgeSection.update(dt, {
       advance,
@@ -1472,7 +1777,8 @@ export class DriveMode {
     const portrait = this.viewportAspect < 0.78;
     const targetFollow = this.isMobile ? 0.88 : 0.38;
     const cameraFollow = this.isMobile ? 0.98 : 0.82;
-    const elevation = this.state.roadElevation || 0;
+    const elevation = (this.state.roadElevation || 0)
+      + (this.state.transitionElevation || 0);
     target.set(
       DRIVE_ORIGIN_X + this.state.lateralX * targetFollow,
       (portrait ? 1.65 : 1.3) + elevation,
@@ -1499,9 +1805,6 @@ export class DriveMode {
   }
 
   nearbyObjects() {
-    if (this.state.phase === 'canal') {
-      return this.canalSection.nearbyObjects().map((object) => ({ ...object, surface: 'water' }));
-    }
     if (this.state.collisionProfile !== 'road') return [];
     return this.runnerObjects
       .filter((object) => object.z > -70 && object.z < 16)
@@ -1526,7 +1829,6 @@ export class DriveMode {
       distance: +this.state.distance.toFixed(1),
       score: this.state.score,
       shards: this.state.shards,
-      orbs: this.state.orbs,
       pickups: this.state.shards,
       crashed: this.state.crashed,
       laneChanges: this.state.laneChanges,
@@ -1542,15 +1844,22 @@ export class DriveMode {
       biome: this.state.biome,
       roadElevation: +this.state.roadElevation.toFixed(2),
       roadGrade: +this.state.roadGrade.toFixed(4),
+      transitionElevation: +this.state.transitionElevation.toFixed(2),
+      sunset: +this.state.sunset.toFixed(3),
+      starVisibility: +this.state.starVisibility.toFixed(3),
+      desertBlend: +this.state.desertBlend.toFixed(3),
+      coastBlend: +this.state.coastBlend.toFixed(3),
+      fogNear: +this.state.fogNear.toFixed(1),
+      fogFar: +this.state.fogFar.toFixed(1),
       bridgeVariant: this.state.bridgeVariant,
       bridgeProgress: +this.state.bridgeProgress.toFixed(3),
       collisionProfile: this.state.collisionProfile,
       transitionMarkers: {
-        canalApproach: CANAL_APPROACH_START,
-        entryRamp: CANAL_ENTRY_START,
-        canalRun: CANAL_RUN_START,
-        exitRamp: CANAL_EXIT_START,
-        roadReturn: CANAL_RETURN_START,
+        coastApproach: COAST_APPROACH_START,
+        entryRamp: COAST_ENTRY_START,
+        coastRun: COAST_RUN_START,
+        exitRamp: COAST_EXIT_START,
+        coastDeparture: COAST_RETURN_START,
         desertApproach: DESERT_APPROACH_START,
         desertRun: DESERT_RUN_START,
         bridgeClimb: BRIDGE_CLIMB_START,
@@ -1562,8 +1871,13 @@ export class DriveMode {
       bendX: +this.bendUniforms.uBendX.value.toFixed(6),
       bendY: +this.bendUniforms.uBendY.value.toFixed(6),
       terrain: 'camera-centered ImprovedNoise FBM mesh resampled during travel',
+      roadSurface: {
+        normalMap: `${this.asphaltNormalMap.image.width}x${this.asphaltNormalMap.image.height} procedural tangent-space asphalt`,
+        normalRepeat: [this.asphaltNormalMap.repeat.x, this.asphaltNormalMap.repeat.y],
+        puddles: 'organic shader mask with low roughness and flattened micro-normal',
+      },
       visualGains: this.visualGains?.snapshot(),
-      canal: this.canalSection.snapshot(),
+      coast: this.coastalSection.snapshot(),
       desert: this.desertSection.snapshot(),
       bridge: this.bridgeSection.snapshot(),
       roadside: this.roadsideProps.snapshot(),

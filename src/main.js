@@ -1467,7 +1467,7 @@ const state = {
 };
 const driveMode = new DriveMode(scene, {
   isMobile: isMobileDevice,
-  onCollect: (_driveState, kind) => handleDriveCollect(kind),
+  onCollect: () => handleDriveCollect(),
   onCrash: () => finishDrive(),
   onSectionChange: (section) => handleDriveSectionChange(section),
   prefersReducedMotion: () => motion.reducedMotion,
@@ -1584,9 +1584,8 @@ function applyModeLook(profile = 'free') {
   raceSkyDome.visible = racing;
   raceMoon.visible = racing;
   sky.visible = !racing && !driving;
-  // Three.js Water uses a nested reflection render. Only one reflective Water
-  // surface may be visible at a time or separate reflectors can recurse into
-  // each other during their mirror pass.
+  // Drive runs at a distant world origin, so isolate it from the original
+  // playground pool while preserving that Water surface in the other modes.
   poolWater.visible = !driving;
 }
 
@@ -1895,22 +1894,21 @@ function writeDriveRecords() {
   }
 }
 
-function handleDriveCollect(kind = 'shard') {
-  const isOrb = kind === 'orb';
-  showToast(isOrb ? 'FLOATING ORB +1' : 'DATA SHARD +1', 0.8);
+function handleDriveCollect() {
+  showToast('DATA SHARD +1', 0.8);
   motion.pulse(driveHudShards, { strength: 1.32, color: 'brightness(1.7) saturate(1.45)' });
-  playTone((isOrb ? 780 : 680) + (driveMode.state.shards % 4) * 90, 0.08, 'triangle', 0.08);
+  playTone(680 + (driveMode.state.shards % 4) * 90, 0.08, 'triangle', 0.08);
   haptic('collect');
   updateDriveHud();
 }
 
 function handleDriveSectionChange(section) {
   const feedback = {
-    'canal-ahead': { message: 'AQUA LINK AHEAD', tone: 260, haptic: 'warning' },
-    'entry-takeoff': { message: 'RAMP LOCK · TRANSFORM', tone: 360, haptic: 'jump' },
-    'boat-deployed': { message: 'SPEEDBOAT ONLINE', tone: 610, haptic: 'success' },
-    'exit-takeoff': { message: 'ROADLINK · TRANSFORM', tone: 430, haptic: 'jump' },
-    'car-restored': { message: 'COUPE ONLINE', tone: 520, haptic: 'impact' },
+    'coast-ahead': { message: 'HOTEL COAST AHEAD', tone: 260, haptic: 'warning' },
+    'entry-jump': { message: 'COAST RAMP · LAUNCH', tone: 360, haptic: 'jump' },
+    'coast-entered': { message: 'HOTEL COAST ONLINE', tone: 610, haptic: 'success' },
+    'exit-jump': { message: 'DESERT LINK · LAUNCH', tone: 430, haptic: 'jump' },
+    'coast-returned': { message: 'COAST ROADLINK', tone: 520, haptic: 'impact' },
     'desert-ahead': { message: 'BADLANDS LINK AHEAD', tone: 290, haptic: 'warning' },
     'desert-entered': { message: 'MAGENTA BADLANDS', tone: 470, haptic: 'success' },
     'bridge-climb': { message: 'SKYBRIDGE ASCENT', tone: 340, haptic: 'jump' },
@@ -1920,8 +1918,9 @@ function handleDriveSectionChange(section) {
     'city-returned': { message: 'NEON CITY ONLINE', tone: 560, haptic: 'success' },
   }[section.event];
   if (!feedback) return;
-  showToast(feedback.message, section.event.includes('takeoff') ? 1.05 : 0.85);
-  playTone(feedback.tone, section.event.includes('takeoff') ? 0.2 : 0.12, 'sawtooth', 0.09);
+  const isJumpEvent = section.event.includes('jump');
+  showToast(feedback.message, isJumpEvent ? 1.05 : 0.85);
+  playTone(feedback.tone, isJumpEvent ? 0.2 : 0.12, 'sawtooth', 0.09);
   haptic(feedback.haptic);
   motion.pulse(driveHudSection, { strength: 1.18, color: 'brightness(1.55) saturate(1.4)' });
   updateDriveHud();
@@ -2275,9 +2274,8 @@ function updateRaceHud() {
 }
 
 function updateDriveHud() {
-  const waterPhase = driveMode.state.phase === 'canal';
   const protocolByBiome = {
-    canal: 'RUN · AMPHIBIOUS LINK',
+    coast: 'DRIVE · HOTEL COAST',
     desert: 'RUN · NEON BADLANDS',
     bridge: 'RUN · SKYBRIDGE',
     city: 'DRIVE · NEON NIGHTSHIFT',
@@ -2285,8 +2283,8 @@ function updateDriveHud() {
   driveHudDistance.textContent = `${Math.floor(driveMode.state.distance)} m`;
   driveHudProtocol.textContent = protocolByBiome[driveMode.state.biome] || protocolByBiome.city;
   driveHudSection.textContent = driveMode.state.sectionLabel;
-  driveHudPickupLabel.textContent = waterPhase ? 'ORBS' : 'PICKUPS';
-  driveHudShards.textContent = String(waterPhase ? driveMode.state.orbs : driveMode.state.shards);
+  driveHudPickupLabel.textContent = 'PICKUPS';
+  driveHudShards.textContent = String(driveMode.state.shards);
   driveHudLane.textContent = `${driveMode.state.targetLane + 1} / 3`;
   driveHudSpeed.textContent = `${Math.round(driveMode.state.speed * 4.2)} KM/H`;
   motion.setSpeed(driveSpeedFill, driveMode.state.speed / 62);
@@ -2551,7 +2549,6 @@ function updateVisuals(dt) {
   canvas.dataset.driveLane = String(driveMode.state.laneIndex);
   canvas.dataset.driveDistance = driveMode.state.distance.toFixed(2);
   canvas.dataset.driveShards = String(driveMode.state.shards);
-  canvas.dataset.driveOrbs = String(driveMode.state.orbs);
   canvas.dataset.drivePhase = driveMode.state.phase;
   canvas.dataset.driveVehicle = driveMode.state.vehicle;
   canvas.dataset.driveBiome = driveMode.state.biome;
@@ -2783,7 +2780,7 @@ window.render_game_to_text = () => {
   });
   const currentSection = raceSectionAtDistance(raceMotor.distance);
   return JSON.stringify({
-    coordinateSystem: 'Free Mode uses world Y-up physics; Race Mode uses a track-local looping frame; Drive Mode uses straight three-lane road/canal logic with view-space shader curvature',
+    coordinateSystem: 'Free Mode uses world Y-up physics; Race Mode uses a track-local looping frame; Drive Mode uses straight three-lane endless-road logic with view-space shader curvature',
     mode: state.mode,
     lastKey: state.lastKey,
     player: {
@@ -2846,7 +2843,7 @@ window.render_game_to_text = () => {
       antialiasSamples: isMobileDevice ? 0 : 4,
       shadowMap: isMobileDevice ? 1024 : 2048,
       reflectionMap: isDriveMode()
-        ? (driveMode.state.phase.startsWith('canal') ? (isMobileDevice ? 256 : 512) : 0)
+        ? 0
         : (isMobileDevice ? 384 : 768),
       postProcessing: !isMobileDevice && (!isRunnerMode() || isDriveMode()),
       bloomEnabled: !isMobileDevice && isDriveMode(),
@@ -2854,7 +2851,7 @@ window.render_game_to_text = () => {
       gtaoSamples: gtao.enabled && !isRunnerMode() ? gtaoSamples : 0,
     },
     controls: isDriveMode()
-      ? 'automatic car and speedboat acceleration, three fixed lanes, A/D or Left/Right switch one lane, horizontal swipe switches one lane, ramps and vehicle transformations are automatic, R restart'
+      ? 'automatic car acceleration, three fixed lanes, A/D or Left/Right switch one lane, horizontal swipe switches one lane, road ramps launch the car automatically, R restart'
       : (isRaceMode()
         ? 'automatic high-speed forward roll, drag horizontally to steer, tap or Space to jump including in air, fixed chase camera, R reset to last checkpoint'
         : (isMobileDevice ? 'automatic forward roll, one-finger horizontal slide steering, tap or upward swipe jump with repeatable air jumps, automatic camera, Reset button' : 'WASD/arrows roll, Space jump, drag look, R reset, F fullscreen')),
@@ -2870,20 +2867,20 @@ window.render_game_to_text = () => {
       ? {
           vehicle: driveMode.state.vehicle,
           surface: driveMode.state.surface,
-          road: 'clearcoated procedural wet asphalt with neon lane reflections',
-          canal: 'official Three.js Water planar reflections with procedural normals and pooled water gameplay',
+          road: 'normal-mapped rough asphalt with clearcoated puddles and neon light reflections',
+          coast: 'pooled Art Deco hotels, condos, nightclubs, billboards, palms, bushes, and dry beach shoulders',
           desert: 'pooled procedural rose-sand mesas, layered rock spires, road-wide natural arches, saguaros, shrubs, tumbleweeds, and neon deco signs',
           bridge: `elevated three-lane ${driveMode.state.bridgeVariant} skybridge with sampled climb, span, and descent geometry`,
           roadside: 'pooled streetlights, overhead sign gantries, side highway signs, and wet-road light smears',
           terrain: 'camera-centered ImprovedNoise FBM mesh',
-          city: 'recycled cyber towers plus pooled Art Deco hotels, condos, nightclubs, billboards, palms, and bushes',
-          curvature: 'shared view-space parabolic vertex bend on road and canal scenery; mathematically flat reflective water plane',
+          city: 'recycled cyber towers and dense neon highway furniture',
+          curvature: 'shared view-space parabolic vertex bend across the road, roadside furniture, and coastal scenery',
         }
       : (isRaceMode()
         ? { playerMaterial: 'rigid texture-free procedural PBR marble', sky: 'procedural stars and magenta nebula', terrain: 'ImprovedNoise track-following canyon', monuments: '7 colossal arches plus 14 concrete and glossy-metal walls', moon: 'synthetic cyan' }
         : { playerMaterial: 'rigid texture-free procedural PBR marble', sky: 'procedural Preetham', sunElevation: skySettings.elevation, water: 'planar reflective', waves: 'three small geometric wave bands, max amplitude 0.046' }),
     landmarks: isDriveMode()
-      ? ['three fixed neon road and canal lanes', 'striped synthetic sun with magenta bloom halo', 'pooled streetlights and overhead highway sign gantries', 'entry and exit transformation ramps', 'reflective turquoise tideway', 'procedural desert rock arches and saguaros', 'elevated lake, river, and dry-land skybridges', 'endless cyber towers and Art Deco waterfront']
+      ? ['three fixed neon road lanes', 'slow-setting synthetic sun and emerging stars', 'pooled streetlights and overhead highway sign gantries', 'entry and exit car jump ramps', 'palm-lined hotel coast road', 'procedural desert rock arches and saguaros', 'elevated lake, river, and dry-land skybridges', 'endless cyber towers and Art Deco hotels']
       : (isRaceMode()
         ? [`start elevation ${raceTrackSamples[0].center.y.toFixed(0)}`, `${RACE_CHECKPOINT_DISTANCES.length} checkpoints divide ${COURSE_SECTIONS.length} paced sections`, `finish elevation ${raceTrackSamples.at(-1).center.y.toFixed(0)}`, `6500-unit banked half-pipe with strong S-turns and ${TRACK_LOOPS.length} complete vertical loops`, 'procedural canyon and seven monumental arches']
         : ['gold arch at (0, -5)', 'rose/coral stairs near (-7, -5)', 'coral arch at (7, -12)']),
