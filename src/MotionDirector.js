@@ -55,6 +55,7 @@ export class MotionDirector {
     gsap.set(this.touchHint, { xPercent: -50, autoAlpha: 0, y: 8 });
     gsap.set(this.countdown, { autoAlpha: 0 });
     this.setTouchStickX = gsap.quickSetter(this.touchStick, 'x', 'px');
+    this.setTouchStickY = gsap.quickSetter(this.touchStick, 'y', 'px');
 
     for (const panel of panels) {
       const hidden = panel.classList.contains('is-hidden');
@@ -340,13 +341,14 @@ export class MotionDirector {
     });
   }
 
-  moveTouchStick(x) {
+  moveTouchStick(x, y = 0) {
     this.setTouchStickX(x);
+    this.setTouchStickY(y);
   }
 
   hideTouchJoystick() {
     gsap.killTweensOf([this.touchJoystick, this.touchStick]);
-    gsap.to(this.touchStick, { x: 0, duration: this.time(0.16), ease: 'power3.out', overwrite: 'auto' });
+    gsap.to(this.touchStick, { x: 0, y: 0, duration: this.time(0.16), ease: 'power3.out', overwrite: 'auto' });
     gsap.to(this.touchJoystick, { autoAlpha: 0, scale: 0.94, duration: this.time(0.14), ease: 'power2.in', overwrite: 'auto' });
   }
 
@@ -355,6 +357,27 @@ export class MotionDirector {
     gsap.timeline()
       .to(this.touchJoystick, { borderColor: 'rgba(255, 250, 240, .95)', scale: this.reducedMotion ? 1 : 1.08, duration: this.time(0.08) })
       .to(this.touchJoystick, { borderColor: 'rgba(255, 250, 240, .42)', scale: 1, duration: this.time(0.2), ease: 'power2.out' });
+  }
+
+  flashTouchBoost() {
+    gsap.killTweensOf(this.touchJoystick);
+    gsap.timeline()
+      .to(this.touchJoystick, {
+        borderColor: 'rgba(40, 238, 255, .98)',
+        boxShadow: '0 0 30px rgba(255, 22, 141, .72)',
+        y: this.reducedMotion ? 0 : -10,
+        scale: this.reducedMotion ? 1 : 1.12,
+        duration: this.time(0.1),
+        ease: 'power3.out',
+      })
+      .to(this.touchJoystick, {
+        borderColor: 'rgba(255, 250, 240, .42)',
+        boxShadow: 'none',
+        y: 0,
+        scale: 1,
+        duration: this.time(0.26),
+        ease: 'back.out(1.7)',
+      });
   }
 
   showTouchHint(message) {

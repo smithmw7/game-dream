@@ -119,7 +119,13 @@ export class DriveVisualGains {
     this.lastStreakOpacity = -1;
     this.burstCursor = 0;
     this.pulseCursor = 0;
-    this.eventCounts = { collectBursts: 0, roadPulses: 0, crashBursts: 0, shockwaves: 0 };
+    this.eventCounts = {
+      collectBursts: 0,
+      roadPulses: 0,
+      crashBursts: 0,
+      shockwaves: 0,
+      boostActivations: 0,
+    };
     this.boost = { value: 0 };
     this.surface = 'road';
 
@@ -410,6 +416,11 @@ export class DriveVisualGains {
     this.eventCounts.collectBursts += 1;
   }
 
+  activateBoost() {
+    if (this.surface === 'road') this.triggerRoadPulse();
+    this.eventCounts.boostActivations += 1;
+  }
+
   crash(origin) {
     this.triggerBurst('crash', origin);
     this.triggerShockwave(origin);
@@ -419,8 +430,9 @@ export class DriveVisualGains {
   updateSpeedStreaks(state, active) {
     this.lastState = state;
     const speedAmount = THREE.MathUtils.clamp((state.speed - 28) / 34, 0, 1);
+    const boostAmount = Math.max(this.boost.value, state.boostIntensity || 0);
     const motionAmount = this.prefersReducedMotion() || !active ? 0 : speedAmount;
-    const opacityTarget = motionAmount * (0.28 + this.boost.value * 0.34);
+    const opacityTarget = motionAmount * (0.28 + boostAmount * 0.42);
     if (Math.abs(opacityTarget - this.lastStreakOpacity) > 0.025) {
       this.lastStreakOpacity = opacityTarget;
       this.streakOpacityTo(opacityTarget);
@@ -430,7 +442,7 @@ export class DriveVisualGains {
     for (let index = 0; index < this.streakCount; index++) {
       const seed = this.streakSeeds[index];
       const z = 14 - ((travel + seed.offset) % span);
-      const length = (2.2 + speedAmount * 8.6 + this.boost.value * 5.2) * seed.length;
+      const length = (2.2 + speedAmount * 8.6 + boostAmount * 8) * seed.length;
       const roadSample = bridgeElevationAndGradeAtZ(state, z);
       this.dummy.position.set(seed.x, roadSample.elevation - 0.015, z);
       this.dummy.rotation.set(roadSample.grade, 0, 0);
@@ -442,7 +454,7 @@ export class DriveVisualGains {
 
     const trailOpacity = this.prefersReducedMotion() || !active
       ? 0
-      : 0.1 + speedAmount * 0.14 + this.boost.value * 0.2;
+      : 0.1 + speedAmount * 0.14 + boostAmount * 0.28;
     for (const setOpacity of this.trailSetters) setOpacity(trailOpacity);
   }
 
@@ -455,7 +467,13 @@ export class DriveVisualGains {
     this.boost.value = 0;
     this.lastStreakOpacity = -1;
     this.streakMaterial.opacity = 0;
-    Object.assign(this.eventCounts, { collectBursts: 0, roadPulses: 0, crashBursts: 0, shockwaves: 0 });
+    Object.assign(this.eventCounts, {
+      collectBursts: 0,
+      roadPulses: 0,
+      crashBursts: 0,
+      shockwaves: 0,
+      boostActivations: 0,
+    });
     this.burstSlots.forEach((slot) => {
       slot.tween?.kill();
       slot.active = false;

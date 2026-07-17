@@ -14,6 +14,13 @@ const ROAD_FAR_Z = -300;
 const CAR_Z = 4;
 const ROAD_SURFACE_Y = -0.04;
 const LANE_X = [-3.25, 0, 3.25];
+const DRIVE_CRUISE_SPEED = 62;
+const DRIVE_BOOST_SPEED = 88;
+const DRIVE_BOOST_DURATION = 3;
+const DRIVE_BOOST_ACCELERATION = 68;
+const DRIVE_BOOST_RELEASE = 20;
+const DRIVE_LANE_RATE = 11.5;
+const DRIVE_BOOST_LANE_RATE = 21.5;
 const RAMP_LENGTH = 15;
 const RAMP_HALF_LENGTH = RAMP_LENGTH * 0.5;
 const RAMP_TILT = 0.135;
@@ -340,6 +347,14 @@ export class DriveMode {
       elapsed: 0,
       crashed: false,
       laneChanges: 0,
+      boostActive: false,
+      boostRemaining: 0,
+      boostDuration: DRIVE_BOOST_DURATION,
+      boostIntensity: 0,
+      boostCount: 0,
+      boostSpeedCap: DRIVE_BOOST_SPEED,
+      normalSpeedCap: DRIVE_CRUISE_SPEED,
+      laneResponseRate: DRIVE_LANE_RATE,
       phase: 'city',
       sectionLabel: 'ENDLESS CITY',
       cycleIndex: 0,
@@ -1517,6 +1532,10 @@ export class DriveMode {
       laneIndex: 1, targetLane: 1, lateralX: 0, distance: safeStartDistance, speed: 0,
       shards: 0, score: Math.floor(safeStartDistance * 2),
       elapsed: 0, crashed: false, laneChanges: 0,
+      boostActive: false, boostRemaining: 0, boostDuration: DRIVE_BOOST_DURATION,
+      boostIntensity: 0, boostCount: 0,
+      boostSpeedCap: DRIVE_BOOST_SPEED, normalSpeedCap: DRIVE_CRUISE_SPEED,
+      laneResponseRate: DRIVE_LANE_RATE,
       phase: startSection.phase,
       sectionLabel: startSection.label,
       cycleIndex: startSection.cycleIndex,
@@ -1591,6 +1610,22 @@ export class DriveMode {
     this.roadsideProps?.setActive(Boolean(visible && ROADSIDE_PHASES.has(this.state.phase)));
   }
 
+  activateBoost() {
+    if (this.state.crashed || this.state.boostActive) return false;
+    this.state.boostActive = true;
+    this.state.boostRemaining = DRIVE_BOOST_DURATION;
+    this.state.boostCount += 1;
+    this.visualGains?.activateBoost();
+    return true;
+  }
+
+  cancelBoost() {
+    this.state.boostActive = false;
+    this.state.boostRemaining = 0;
+    this.state.boostIntensity = 0;
+    this.state.laneResponseRate = DRIVE_LANE_RATE;
+  }
+
   shiftLane(direction) {
     if (this.state.crashed) return false;
     const next = THREE.MathUtils.clamp(this.state.targetLane + Math.sign(direction), 0, 2);
@@ -1605,16 +1640,17 @@ export class DriveMode {
     this.laneTimeline?.kill();
     gsap.killTweensOf(this.carMotionRig.rotation);
     const tilt = this.prefersReducedMotion() ? 0 : direction;
+    const durationScale = THREE.MathUtils.lerp(1, 0.52, this.state.boostIntensity);
     this.laneTimeline = gsap.timeline({ defaults: { overwrite: 'auto' } });
     this.laneTimeline.to(this.carMotionRig.rotation, {
       z: -tilt * 0.12,
       y: -tilt * 0.065,
-      duration: 0.1,
+      duration: 0.1 * durationScale,
       ease: 'power2.out',
     }).to(this.carMotionRig.rotation, {
       z: 0,
       y: 0,
-      duration: 0.27,
+      duration: 0.27 * durationScale,
       ease: 'back.out(1.8)',
     });
   }
@@ -1644,6 +1680,7 @@ export class DriveMode {
   }
 
   animateCrash() {
+    this.cancelBoost();
     this.laneTimeline?.kill();
     this.impactTimeline?.kill();
     this.carIdleTimeline.pause();
@@ -1689,7 +1726,27 @@ export class DriveMode {
     }
 
     this.state.elapsed += dt;
-    this.state.speed = Math.min(62, this.state.speed + dt * 0.72);
+    this.state.boostRemaining = Math.max(0, this.state.boostRemaining - dt);
+    this.state.boostActive = this.state.boostRemaining > 0;
+    this.state.boostIntensity = smoothDamp(
+      this.state.boostIntensity,
+      this.state.boostActive ? 1 : 0,
+      this.state.boostActive ? 12 : 4.5,
+      dt,
+    );
+    const targetSpeed = THREE.MathUtils.lerp(
+      DRIVE_CRUISE_SPEED,
+      DRIVE_BOOST_SPEED,
+      this.state.boostIntensity,
+    );
+    const speedRate = this.state.speed > targetSpeed
+      ? DRIVE_BOOST_RELEASE
+      : (this.state.boostActive ? DRIVE_BOOST_ACCELERATION : 0.72);
+    this.state.speed += THREE.MathUtils.clamp(
+      targetSpeed - this.state.speed,
+      -speedRate * dt,
+      speedRate * dt,
+    );
     const advance = this.state.speed * dt;
     this.state.distance += advance;
     const section = driveSectionAtDistance(this.state.distance);
@@ -1699,9 +1756,19 @@ export class DriveMode {
       || (
         section.phase === 'coast-departure'
         && section.cycleDistance >= 970
-      );
+    );
     const targetX = LANE_X[this.state.targetLane];
-    this.state.lateralX = smoothDamp(this.state.lateralX, targetX, 11.5, dt);
+    this.state.laneResponseRate = THREE.MathUtils.lerp(
+      DRIVE_LANE_RATE,
+      DRIVE_BOOST_LANE_RATE,
+      this.state.boostIntensity,
+    );
+    this.state.lateralX = smoothDamp(
+      this.state.lateralX,
+      targetX,
+      this.state.laneResponseRate,
+      dt,
+    );
     this.car.position.x = this.state.lateralX;
     if (Math.abs(this.state.lateralX - targetX) < 0.08) this.state.laneIndex = this.state.targetLane;
 
@@ -1795,6 +1862,7 @@ export class DriveMode {
 
   getCameraPose(target, position) {
     const portrait = this.viewportAspect < 0.78;
+    const boostCameraAmount = this.state.boostIntensity * (this.prefersReducedMotion() ? 0.45 : 1);
     const targetFollow = this.isMobile ? 0.88 : 0.38;
     const cameraFollow = this.isMobile ? 0.98 : 0.82;
     const elevation = (this.state.roadElevation || 0)
@@ -1802,12 +1870,12 @@ export class DriveMode {
     target.set(
       DRIVE_ORIGIN_X + this.state.lateralX * targetFollow,
       (portrait ? 1.65 : 1.3) + elevation,
-      portrait ? -10.7 : -9.5,
+      THREE.MathUtils.lerp(portrait ? -10.7 : -9.5, portrait ? -17.4 : -15.8, boostCameraAmount),
     );
     position.set(
       DRIVE_ORIGIN_X + this.state.lateralX * cameraFollow,
-      (portrait ? 7.25 : 6.4) + elevation,
-      portrait ? 20.8 : 18.2,
+      (portrait ? 7.25 : 6.4) + elevation + boostCameraAmount * (portrait ? 0.75 : 0.5),
+      (portrait ? 20.8 : 18.2) + boostCameraAmount * 1.2,
     );
     return { target, position };
   }
@@ -1846,6 +1914,16 @@ export class DriveMode {
       laneX: +this.state.lateralX.toFixed(2),
       laneCenters: LANE_X,
       speed: +this.state.speed.toFixed(2),
+      boost: {
+        active: this.state.boostActive,
+        remaining: +this.state.boostRemaining.toFixed(3),
+        duration: this.state.boostDuration,
+        intensity: +this.state.boostIntensity.toFixed(3),
+        activationCount: this.state.boostCount,
+        normalSpeedCap: this.state.normalSpeedCap,
+        boostSpeedCap: this.state.boostSpeedCap,
+        laneResponseRate: +this.state.laneResponseRate.toFixed(2),
+      },
       distance: +this.state.distance.toFixed(1),
       score: this.state.score,
       shards: this.state.shards,

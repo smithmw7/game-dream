@@ -50,6 +50,7 @@ const driveHudProtocol = document.querySelector('#drive-hud-protocol');
 const driveHudSection = document.querySelector('#drive-hud-section');
 const driveHudPickupLabel = document.querySelector('#drive-hud-pickup-label');
 const driveSpeedFill = document.querySelector('#drive-speed-fill');
+const driveSpeedTrack = driveSpeedFill.closest('.speed-track');
 const raceBriefing = document.querySelector('#race-briefing');
 const raceStartButton = document.querySelector('#race-start-button');
 const raceBackButton = document.querySelector('#race-back-button');
@@ -1643,6 +1644,7 @@ const webHapticPatterns = {
   selection: 7,
   collect: 8,
   jump: 12,
+  boost: [14, 18, 30],
   checkpoint: 26,
   impact: 20,
   success: [18, 24, 42],
@@ -1670,9 +1672,11 @@ function haptic(kind = 'impact') {
     if (kind === 'success') return Haptics.notification({ type: NotificationType.Success });
     if (kind === 'warning') return Haptics.notification({ type: NotificationType.Warning });
     if (kind === 'error') return Haptics.notification({ type: NotificationType.Error });
-    const style = kind === 'jump' || kind === 'checkpoint' || kind === 'impact'
-      ? ImpactStyle.Medium
-      : ImpactStyle.Light;
+    const style = kind === 'boost'
+      ? ImpactStyle.Heavy
+      : (kind === 'jump' || kind === 'checkpoint' || kind === 'impact'
+        ? ImpactStyle.Medium
+        : ImpactStyle.Light);
     return Haptics.impact({ style });
   });
   if (!nativeHandled) navigator.vibrate?.(webHapticPatterns[kind] ?? webHapticPatterns.impact);
@@ -1873,7 +1877,7 @@ function startDrive() {
   motion.showHud(driveHud);
   if (debugFreezeQuery) motion.hideCountdown();
   else motion.showCountdown('3');
-  motion.showTouchHint('‹  SWIPE TO CHANGE LANE  ›');
+  motion.showTouchHint('‹ LANES · SWIPE UP BOOST ↑');
   applyModeLook('drive');
   setPanel(null);
   setRaceBodyMode(true);
@@ -1986,8 +1990,31 @@ function commitDriveLaneChange(direction) {
   return true;
 }
 
+function commitDriveBoost() {
+  if (state.mode !== 'drive-active' || !driveMode.activateBoost()) return false;
+  showToast(`OVERDRIVE · ${driveMode.state.boostDuration.toFixed(1)} S`, 0.9);
+  playTone(280, 0.14, 'sawtooth', 0.1);
+  playTone(520, 0.22, 'triangle', 0.1, 0.08);
+  haptic('boost');
+  motion.flashTouchBoost();
+  motion.pulse(driveHudSpeed, { strength: 1.24, color: 'brightness(1.9) saturate(1.8)' });
+  motion.pulse(driveSpeedTrack, { strength: 1.04, color: 'brightness(1.8) saturate(1.7)' });
+  motion.hideTouchHint();
+  updateDriveHud();
+  return true;
+}
+
 addEventListener('keydown', (event) => {
   state.lastKey = `${event.code}:${event.key}`;
+  if (
+    state.mode === 'drive-active'
+    && !event.repeat
+    && ['ArrowUp', 'KeyW', 'Space', 'Spacebar'].includes(event.code)
+  ) {
+    commitDriveBoost();
+    event.preventDefault();
+    return;
+  }
   if (state.mode === 'drive-active' && !event.repeat && ['ArrowLeft', 'KeyA', 'ArrowRight', 'KeyD'].includes(event.code)) {
     const direction = event.code === 'ArrowLeft' || event.code === 'KeyA' ? -1 : 1;
     commitDriveLaneChange(direction);
@@ -2044,8 +2071,13 @@ const touchControl = {
   startedAt: 0,
   maxDistance: 0,
   jumpTriggered: false,
-  swipeCommitted: false,
+  gestureAction: null,
 };
+
+function isDriveBoostGesture(swipeX, swipeY) {
+  const threshold = Math.max(48, Math.min(72, innerHeight * 0.07));
+  return swipeY <= -threshold && Math.abs(swipeY) > Math.abs(swipeX) * 1.25;
+}
 
 function maybeTriggerTouchJump(clientX, clientY) {
   if (isDriveMode()) return;
@@ -2063,9 +2095,12 @@ function endTouchPointer(event) {
   if (state.mode === 'drive-active') {
     const swipeX = event.clientX - touchControl.originX;
     const swipeY = event.clientY - touchControl.originY;
-    if (!touchControl.swipeCommitted && Math.abs(swipeX) > 34 && Math.abs(swipeX) > Math.abs(swipeY) * 1.15) {
+    if (!touchControl.gestureAction && isDriveBoostGesture(swipeX, swipeY)) {
+      touchControl.gestureAction = 'boost';
+      commitDriveBoost();
+    } else if (!touchControl.gestureAction && Math.abs(swipeX) > 34 && Math.abs(swipeX) > Math.abs(swipeY) * 1.15) {
+      touchControl.gestureAction = 'lane';
       commitDriveLaneChange(swipeX);
-      touchControl.swipeCommitted = true;
     }
     touchControl.id = null;
     input.touchX = 0;
@@ -2095,7 +2130,7 @@ function cancelTouchPointer(event) {
     return;
   }
   touchControl.id = null;
-  touchControl.swipeCommitted = false;
+  touchControl.gestureAction = null;
   touchControl.jumpTriggered = false;
   input.touchX = 0;
   motion.hideTouchJoystick();
@@ -2120,7 +2155,7 @@ canvas.addEventListener('pointerdown', (event) => {
     touchControl.startedAt = performance.now();
     touchControl.maxDistance = 0;
     touchControl.jumpTriggered = false;
-    touchControl.swipeCommitted = false;
+    touchControl.gestureAction = null;
     startGestureHaptics();
     motion.showTouchJoystick(
       THREE.MathUtils.clamp(event.clientX, 88, innerWidth - 88),
@@ -2147,11 +2182,15 @@ canvas.addEventListener('pointermove', (event) => {
     const totalX = event.clientX - touchControl.originX;
     const totalY = event.clientY - touchControl.originY;
     const dx = THREE.MathUtils.clamp(totalX, -64, 64);
+    const dy = THREE.MathUtils.clamp(totalY, -64, 64);
     touchControl.maxDistance = Math.max(touchControl.maxDistance, Math.hypot(totalX, totalY));
-    motion.moveTouchStick(dx);
-    if (!touchControl.swipeCommitted && Math.abs(totalX) > 36 && Math.abs(totalX) > Math.abs(totalY) * 1.15) {
+    motion.moveTouchStick(dx, dy);
+    if (!touchControl.gestureAction && isDriveBoostGesture(totalX, totalY)) {
+      touchControl.gestureAction = 'boost';
+      commitDriveBoost();
+    } else if (!touchControl.gestureAction && Math.abs(totalX) > 36 && Math.abs(totalX) > Math.abs(totalY) * 1.15) {
+      touchControl.gestureAction = 'lane';
       commitDriveLaneChange(totalX);
-      touchControl.swipeCommitted = true;
       updateDriveHud();
     }
     return;
@@ -2282,12 +2321,15 @@ function updateDriveHud() {
   };
   driveHudDistance.textContent = `${Math.floor(driveMode.state.distance)} m`;
   driveHudProtocol.textContent = protocolByBiome[driveMode.state.biome] || protocolByBiome.city;
-  driveHudSection.textContent = driveMode.state.sectionLabel;
   driveHudPickupLabel.textContent = 'PICKUPS';
   driveHudShards.textContent = String(driveMode.state.shards);
   driveHudLane.textContent = `${driveMode.state.targetLane + 1} / 3`;
   driveHudSpeed.textContent = `${Math.round(driveMode.state.speed * 4.2)} KM/H`;
-  motion.setSpeed(driveSpeedFill, driveMode.state.speed / 62);
+  driveHudSection.textContent = driveMode.state.boostActive
+    ? `BOOST · ${driveMode.state.boostRemaining.toFixed(1)} S`
+    : driveMode.state.sectionLabel;
+  driveHud.classList.toggle('is-boosting', driveMode.state.boostActive || driveMode.state.boostIntensity > 0.05);
+  motion.setSpeed(driveSpeedFill, driveMode.state.speed / driveMode.state.boostSpeedCap);
 }
 
 function collectCoin(coin) {
@@ -2554,6 +2596,8 @@ function updateVisuals(dt) {
   canvas.dataset.driveBiome = driveMode.state.biome;
   canvas.dataset.driveElevation = driveMode.state.roadElevation.toFixed(2);
   canvas.dataset.driveBridgeVariant = driveMode.state.bridgeVariant;
+  canvas.dataset.driveBoost = String(driveMode.state.boostActive);
+  canvas.dataset.driveBoostRemaining = driveMode.state.boostRemaining.toFixed(3);
   if (isRaceMode()) {
     const frame = getRaceFrame(raceMotor.distance);
     makeRaceBasis(frame, raceBallBasis);
@@ -2610,7 +2654,13 @@ function updateVisuals(dt) {
     smoothTarget.lerp(cameraTarget, 1 - Math.exp(-dt * 14));
     const speedAmount = THREE.MathUtils.clamp((driveMode.state.speed - 30) / 34, 0, 1);
     const portraitFov = camera.aspect < 0.78 ? 7 : 0;
-    camera.fov = THREE.MathUtils.lerp(camera.fov, 44 + portraitFov + speedAmount * 8, 1 - Math.exp(-dt * 5));
+    const boostCameraAmount = driveMode.state.boostIntensity * (motion.reducedMotion ? 0.45 : 1);
+    const boostFov = boostCameraAmount * (camera.aspect < 0.78 ? 5 : 6);
+    camera.fov = THREE.MathUtils.lerp(
+      camera.fov,
+      44 + portraitFov + speedAmount * 8 + boostFov,
+      1 - Math.exp(-dt * (5 + boostCameraAmount * 2)),
+    );
     camera.updateProjectionMatrix();
   } else if (isRaceMode()) {
     const frame = getRaceFrame(raceMotor.distance);
@@ -2852,6 +2902,8 @@ window.render_game_to_text = () => {
     camera: {
       yaw: +state.yaw.toFixed(2),
       pitch: +state.pitch.toFixed(2),
+      fov: +camera.fov.toFixed(2),
+      aspect: +camera.aspect.toFixed(3),
       position: { x: +camera.position.x.toFixed(2), y: +camera.position.y.toFixed(2), z: +camera.position.z.toFixed(2) },
       target: { x: +smoothTarget.x.toFixed(2), y: +smoothTarget.y.toFixed(2), z: +smoothTarget.z.toFixed(2) },
     },
@@ -2916,7 +2968,7 @@ window.render_game_to_text = () => {
       gtaoSamples: gtao.enabled && !isRunnerMode() ? gtaoSamples : 0,
     },
     controls: isDriveMode()
-      ? 'automatic car acceleration, three fixed lanes, A/D or Left/Right switch one lane, horizontal swipe switches one lane, road ramps launch the car automatically, R restart'
+      ? 'automatic car acceleration, three fixed lanes, horizontal swipe or A/D or Left/Right switches one lane, upward swipe or Up/W/Space triggers a three-second overdrive boost with faster lane response, road ramps launch the car automatically, R restart'
       : (isRaceMode()
         ? 'automatic high-speed forward roll, drag horizontally to steer, tap or Space to jump including in air, fixed chase camera, R reset to last checkpoint'
         : (isMobileDevice ? 'automatic forward roll, one-finger horizontal slide steering, tap or upward swipe jump with repeatable air jumps, automatic camera, Reset button' : 'WASD/arrows roll, Space jump, drag look, R reset, F fullscreen')),

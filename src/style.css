@@ -236,6 +236,19 @@ h2 {
   box-shadow: 0 10px 42px rgba(255, 0, 124, .16);
 }
 .drive-hud .speed-track i { background: linear-gradient(90deg, #24e7ff, #8d45ff, #ff168c); }
+.drive-hud.is-boosting {
+  border-color: rgba(53, 238, 255, .82);
+  box-shadow: 0 10px 48px rgba(30, 229, 255, .2), inset 0 0 26px rgba(255, 21, 143, .08);
+}
+.drive-hud.is-boosting .hud-course strong,
+.drive-hud.is-boosting .hud-shield {
+  color: #efffff;
+  text-shadow: 0 0 12px rgba(49, 235, 255, .72);
+}
+.drive-hud.is-boosting .speed-track i {
+  background: linear-gradient(90deg, #f4ffff, #32eaff 30%, #9b54ff 65%, #ff238f);
+  box-shadow: 0 0 16px rgba(61, 238, 255, .92);
+}
 .hud-course, .hud-stat { display: grid; gap: 4px; padding-right: 10px; border-right: 1px solid rgba(255, 250, 240, .18); }
 .hud-course strong { font: 600 11px/1 Manrope, sans-serif; }
 .hud-stat strong { font: 500 13px/1 DM Mono, monospace; }
@@ -377,15 +390,15 @@ body.is-drive-mode #touch-joystick {
 }
 
 body.is-drive-mode #touch-joystick::after {
-  content: '‹       ›';
+  content: '↑  ‹   ›';
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
   color: rgba(72, 236, 255, .72);
   font: 500 26px/1 DM Mono, monospace;
-  letter-spacing: 1.6em;
-  transform: translateX(.8em);
+  letter-spacing: .32em;
+  transform: translateX(.16em);
   text-shadow: 0 0 12px rgba(33, 231, 255, .5);
 }
 
