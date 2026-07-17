@@ -2665,24 +2665,71 @@ function updateVisuals(dt) {
   }
 }
 
+const DRIVE_SCREEN_FX = Object.freeze({
+  desktop: Object.freeze({
+    warp: 0.009,
+    chromaticPixels: 0.85,
+    vignette: 0.055,
+    grain: 0.006,
+  }),
+  mobile: Object.freeze({
+    warp: 0.006,
+    chromaticPixels: 0.55,
+    vignette: 0.04,
+    grain: 0.004,
+  }),
+});
+const driveScreenFxProfile = isMobileDevice ? DRIVE_SCREEN_FX.mobile : DRIVE_SCREEN_FX.desktop;
 const gradeShader = {
-  uniforms: { tDiffuse: { value: null }, time: { value: 0 }, grain: { value: 0.022 } },
+  uniforms: {
+    tDiffuse: { value: null },
+    time: { value: 0 },
+    grain: { value: 0.022 },
+    resolution: { value: new THREE.Vector2(innerWidth * qualityRatio, innerHeight * qualityRatio) },
+    warp: { value: 0 },
+    chromaticPixels: { value: 0 },
+    vignette: { value: 0 },
+  },
   vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
   fragmentShader: `
     uniform sampler2D tDiffuse;
     uniform float time;
     uniform float grain;
+    uniform vec2 resolution;
+    uniform float warp;
+    uniform float chromaticPixels;
+    uniform float vignette;
     varying vec2 vUv;
-    float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7))+time*0.013)*43758.5453); }
+    float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
     void main(){
-      vec4 tex=texture2D(tDiffuse,vUv);
-      vec3 c=tex.rgb*0.975+0.009;
+      vec2 p=vUv*2.0-1.0;
+      float radius2=dot(p,p);
+      float edge=pow(smoothstep(0.55,1.0,max(abs(p.x),abs(p.y))),1.7);
+      vec2 warpedUv=0.5+0.5*p*(1.0+warp*radius2);
+      float borderDistance=min(
+        min(warpedUv.x,warpedUv.y),
+        min(1.0-warpedUv.x,1.0-warpedUv.y)
+      );
+      float borderFade=smoothstep(-0.006,0.006,borderDistance);
+      float crtAmount=step(0.0001,warp);
+      vec2 safeUv=clamp(warpedUv,vec2(0.001),vec2(0.999));
+      vec2 chroma=p*edge*chromaticPixels/max(resolution,vec2(1.0));
+      vec4 tex=texture2D(tDiffuse,safeUv);
+      vec3 sampledColor=tex.rgb;
+      if(chromaticPixels>0.0001){
+        sampledColor.r=texture2D(tDiffuse,clamp(safeUv+chroma,vec2(0.001),vec2(0.999))).r;
+        sampledColor.b=texture2D(tDiffuse,clamp(safeUv-chroma,vec2(0.001),vec2(0.999))).b;
+      }
+      vec3 c=sampledColor*0.975+0.009;
       float l=dot(c,vec3(.2126,.7152,.0722));
       c=(c-.18)*1.025+.18;
       c=mix(vec3(l),c,.96);
       c*=mix(vec3(.985,1.0,1.02),vec3(1.025,1.005,.98),smoothstep(.18,.78,l));
-      float n=hash(gl_FragCoord.xy)-.5;
-      c+=n*grain;
+      vec2 noisePhase=vec2(floor(time*0.024),floor(time*0.017));
+      float n=hash(gl_FragCoord.xy+noisePhase)-.5;
+      c+=n*grain*(0.72+edge*0.28);
+      c*=1.0-vignette*pow(clamp(radius2*0.5,0.0,1.0),1.35);
+      c*=mix(1.0,mix(0.26,1.0,borderFade),crtAmount);
       gl_FragColor=vec4(c,tex.a);
     }
   `,
@@ -2719,16 +2766,25 @@ composer.addPass(new OutputPass());
 function render(dt = 1 / 60) {
   updateVisuals(dt);
   poolWater.material.uniforms.time.value += dt * 0.42;
-  gradePass.uniforms.time.value = performance.now();
-  const drivePostProcessing = !isMobileDevice && isDriveMode();
+  gradePass.uniforms.time.value = (
+    motion.reducedMotion ? Math.floor(motionClock * 4) / 4 : motionClock
+  ) * 1000;
+  const drivePostProcessing = isDriveMode();
   gtao.enabled = !isMobileDevice && !isRunnerMode();
-  driveBloom.enabled = drivePostProcessing;
-  gradePass.uniforms.grain.value = drivePostProcessing ? 0.007 : 0.022;
+  driveBloom.enabled = !isMobileDevice && drivePostProcessing;
+  gradePass.uniforms.warp.value = drivePostProcessing ? driveScreenFxProfile.warp : 0;
+  gradePass.uniforms.chromaticPixels.value = drivePostProcessing ? driveScreenFxProfile.chromaticPixels : 0;
+  gradePass.uniforms.vignette.value = drivePostProcessing ? driveScreenFxProfile.vignette : 0;
+  gradePass.uniforms.grain.value = drivePostProcessing
+    ? driveScreenFxProfile.grain * (motion.reducedMotion ? 0.65 : 1)
+    : 0.022;
+  const useComposer = drivePostProcessing || (!isMobileDevice && !isRunnerMode());
   // Long-course coordinates eventually exceed the stable depth range of the
   // GTAO post target. Race Mode uses the native ACES/PBR path for a pristine,
-  // fast image. Drive uses bloom without GTAO; Free keeps GTAO and film grain.
-  if (isMobileDevice || (isRunnerMode() && !drivePostProcessing)) renderer.render(scene, camera);
-  else composer.render(dt);
+  // fast image. Drive combines its lightweight screen FX with desktop-only
+  // bloom; Free keeps GTAO and film grain.
+  if (useComposer) composer.render(dt);
+  else renderer.render(scene, camera);
 }
 
 let accumulator = 0;
@@ -2845,8 +2901,17 @@ window.render_game_to_text = () => {
       reflectionMap: isDriveMode()
         ? 0
         : (isMobileDevice ? 384 : 768),
-      postProcessing: !isMobileDevice && (!isRunnerMode() || isDriveMode()),
+      postProcessing: isDriveMode() || (!isMobileDevice && !isRunnerMode()),
       bloomEnabled: !isMobileDevice && isDriveMode(),
+      screenEffects: isDriveMode()
+        ? {
+            chromaticAberrationPixels: driveScreenFxProfile.chromaticPixels,
+            crtWarp: driveScreenFxProfile.warp,
+            edgeVignette: driveScreenFxProfile.vignette,
+            grain: +gradePass.uniforms.grain.value.toFixed(4),
+            hudAffected: false,
+          }
+        : null,
       gtaoEnabled: gtao.enabled && !isRunnerMode(),
       gtaoSamples: gtao.enabled && !isRunnerMode() ? gtaoSamples : 0,
     },
@@ -2894,6 +2959,7 @@ function resize() {
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
   composer.setSize(width, height);
+  gradePass.uniforms.resolution.value.set(width * qualityRatio, height * qualityRatio);
   driveMode.setViewport?.(width, height);
 }
 addEventListener('resize', resize);
