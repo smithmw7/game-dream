@@ -11,6 +11,7 @@ export class MotionDirector {
     toast,
     touchJoystick,
     touchStick,
+    touchHint,
     speedBars,
     buttons,
     debug = false,
@@ -22,6 +23,7 @@ export class MotionDirector {
     this.toast = toast;
     this.touchJoystick = touchJoystick;
     this.touchStick = touchStick;
+    this.touchHint = touchHint;
     this.debug = debug;
     this.currentPanel = null;
     this.panelTimeline = null;
@@ -50,6 +52,7 @@ export class MotionDirector {
 
     gsap.set(this.toast, { xPercent: -50, y: -12, scale: 0.94, autoAlpha: 0 });
     gsap.set(this.touchJoystick, { autoAlpha: 0, scale: 0.94, transformOrigin: '50% 50%' });
+    gsap.set(this.touchHint, { xPercent: -50, autoAlpha: 0, y: 8 });
     gsap.set(this.countdown, { autoAlpha: 0 });
     this.setTouchStickX = gsap.quickSetter(this.touchStick, 'x', 'px');
 
@@ -352,6 +355,36 @@ export class MotionDirector {
     gsap.timeline()
       .to(this.touchJoystick, { borderColor: 'rgba(255, 250, 240, .95)', scale: this.reducedMotion ? 1 : 1.08, duration: this.time(0.08) })
       .to(this.touchJoystick, { borderColor: 'rgba(255, 250, 240, .42)', scale: 1, duration: this.time(0.2), ease: 'power2.out' });
+  }
+
+  showTouchHint(message) {
+    this.touchHint.textContent = message;
+    gsap.killTweensOf(this.touchHint);
+    gsap.fromTo(this.touchHint, {
+      autoAlpha: 0,
+      y: 8,
+    }, {
+      autoAlpha: 1,
+      y: 0,
+      duration: this.time(0.34),
+      ease: 'power2.out',
+      overwrite: 'auto',
+    });
+  }
+
+  hideTouchHint({ immediate = false } = {}) {
+    gsap.killTweensOf(this.touchHint);
+    if (immediate || this.reducedMotion) {
+      gsap.set(this.touchHint, { autoAlpha: 0, y: 8 });
+      return;
+    }
+    gsap.to(this.touchHint, {
+      autoAlpha: 0,
+      y: 8,
+      duration: this.time(0.28),
+      ease: 'power2.in',
+      overwrite: 'auto',
+    });
   }
 
   bindButtons(buttons) {

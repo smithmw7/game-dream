@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { gsap } from 'gsap';
+import { Capacitor } from '@capacitor/core';
+import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { Water } from 'three/addons/objects/Water.js';
@@ -83,6 +85,7 @@ const isMobileDevice = mobileQuery || Boolean(
   /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent),
 );
 document.body.classList.toggle('is-mobile', isMobileDevice);
+document.body.classList.toggle('is-debug', debugRaceQuery);
 if (isMobileDevice) {
   touchHint.textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
 }
@@ -95,6 +98,7 @@ const motion = new MotionDirector({
   toast: raceToast,
   touchJoystick,
   touchStick,
+  touchHint,
   speedBars: [speedFill, driveSpeedFill],
   buttons: document.querySelectorAll('button'),
   debug: debugRaceQuery,
@@ -1548,6 +1552,9 @@ function showToast(message, duration = 1.25) {
 function applyModeLook(profile = 'free') {
   const racing = profile === true || profile === 'race';
   const driving = profile === 'drive';
+  document.body.classList.toggle('is-race-mode', racing);
+  document.body.classList.toggle('is-drive-mode', driving);
+  document.body.classList.toggle('is-runner-mode', racing || driving);
   const look = {
     exposure: driving ? 0.66 : (racing ? 0.54 : 0.72),
     environment: driving ? 0.38 : (racing ? 0.22 : 0.58),
@@ -1618,8 +1625,52 @@ function playTone(frequency, duration = 0.1, type = 'sine', volume = 0.14, delay
   oscillator.stop(start + duration + 0.02);
 }
 
-function haptic(pattern) {
-  navigator.vibrate?.(pattern);
+const webHapticPatterns = {
+  button: 5,
+  selection: 7,
+  collect: 8,
+  jump: 12,
+  checkpoint: 26,
+  impact: 20,
+  success: [18, 24, 42],
+  warning: [35, 18, 55],
+  error: [75, 30, 90],
+};
+let lastHapticAt = -Infinity;
+
+function runNativeHaptic(action) {
+  if (!Capacitor.isNativePlatform()) return false;
+  try {
+    void action().catch(() => {});
+  } catch {
+    // Native feedback is enhancement-only; gameplay must never wait on it.
+  }
+  return true;
+}
+
+function haptic(kind = 'impact') {
+  const now = performance.now();
+  if (now - lastHapticAt < 34 && kind !== 'error') return;
+  lastHapticAt = now;
+  const nativeHandled = runNativeHaptic(() => {
+    if (kind === 'selection' || kind === 'button') return Haptics.selectionChanged();
+    if (kind === 'success') return Haptics.notification({ type: NotificationType.Success });
+    if (kind === 'warning') return Haptics.notification({ type: NotificationType.Warning });
+    if (kind === 'error') return Haptics.notification({ type: NotificationType.Error });
+    const style = kind === 'jump' || kind === 'checkpoint' || kind === 'impact'
+      ? ImpactStyle.Medium
+      : ImpactStyle.Light;
+    return Haptics.impact({ style });
+  });
+  if (!nativeHandled) navigator.vibrate?.(webHapticPatterns[kind] ?? webHapticPatterns.impact);
+}
+
+function startGestureHaptics() {
+  runNativeHaptic(() => Haptics.selectionStart());
+}
+
+function endGestureHaptics() {
+  runNativeHaptic(() => Haptics.selectionEnd());
 }
 
 function setRaceBodyMode(enabled) {
@@ -1670,7 +1721,7 @@ function showSplash() {
   ball.visible = true;
   motion.hideAllHuds();
   motion.hideCountdown();
-  touchHint.textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
+  motion.hideTouchHint({ immediate: true });
   applyModeLook('free');
   setPanel(splash);
 }
@@ -1686,7 +1737,7 @@ function startFreeMode() {
   ball.visible = true;
   motion.hideAllHuds();
   motion.hideCountdown();
-  touchHint.textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
+  motion.showTouchHint('DRAG TO STEER · TAP / SWIPE UP TO JUMP');
   applyModeLook('free');
   setPanel(null);
   camera.up.set(0, 1, 0);
@@ -1703,7 +1754,7 @@ function showRaceBriefing() {
   ball.visible = true;
   motion.hideAllHuds();
   motion.hideCountdown();
-  touchHint.textContent = 'AUTO FORWARD · DRAG TO STEER · TAP TO JUMP';
+  motion.hideTouchHint({ immediate: true });
   applyModeLook('race');
   refreshRecordUI();
   setPanel(raceBriefing);
@@ -1757,6 +1808,7 @@ function startRace() {
   setPanel(null);
   motion.showHud(raceHud);
   motion.showCountdown('3');
+  motion.showTouchHint('DRAG TO STEER · TAP / SWIPE UP TO JUMP');
   setRaceBodyMode(true);
   placeRacePlayer();
   snapRaceCamera();
@@ -1781,7 +1833,7 @@ function showDriveBriefing() {
   ball.visible = false;
   motion.hideAllHuds();
   motion.hideCountdown();
-  touchHint.textContent = 'SWIPE LEFT / RIGHT · THREE LANES';
+  motion.hideTouchHint({ immediate: true });
   applyModeLook('drive');
   refreshDriveRecordUI();
   setPanel(driveBriefing);
@@ -1803,7 +1855,7 @@ function startDrive() {
   motion.hideHud(raceHud, { immediate: true });
   motion.showHud(driveHud);
   motion.showCountdown('3');
-  touchHint.textContent = 'SWIPE LEFT / RIGHT · THREE LANES';
+  motion.showTouchHint('‹  SWIPE TO CHANGE LANE  ›');
   applyModeLook('drive');
   setPanel(null);
   setRaceBodyMode(true);
@@ -1828,7 +1880,7 @@ function handleDriveCollect() {
   showToast('DATA SHARD +1', 0.8);
   motion.pulse(driveHudShards, { strength: 1.32, color: 'brightness(1.7) saturate(1.45)' });
   playTone(680 + (driveMode.state.shards % 4) * 90, 0.08, 'triangle', 0.08);
-  haptic(8);
+  haptic('collect');
   updateDriveHud();
 }
 
@@ -1852,7 +1904,7 @@ function finishDrive() {
   setPanel(driveFinishPanel);
   showToast('IMPACT · SIGNAL LOST', 1.4);
   playTone(92, 0.4, 'sawtooth', 0.14);
-  haptic([80, 35, 110]);
+  haptic('error');
 }
 
 function finishRace() {
@@ -1877,18 +1929,26 @@ function finishRace() {
   playTone(523, 0.32, 'triangle', 0.16);
   playTone(659, 0.34, 'triangle', 0.14, 0.12);
   playTone(784, 0.5, 'triangle', 0.13, 0.25);
-  haptic([30, 35, 30, 35, 90]);
+  haptic('success');
+}
+
+function commitDriveLaneChange(direction) {
+  if (state.mode !== 'drive-active') return false;
+  const normalizedDirection = Math.sign(direction);
+  if (!normalizedDirection || !driveMode.shiftLane(normalizedDirection)) return false;
+  playTone(normalizedDirection < 0 ? 250 : 310, 0.055, 'square', 0.035);
+  haptic('selection');
+  motion.pulse(driveHudLane, { strength: 1.18 });
+  motion.hideTouchHint();
+  updateDriveHud();
+  return true;
 }
 
 addEventListener('keydown', (event) => {
   state.lastKey = `${event.code}:${event.key}`;
   if (state.mode === 'drive-active' && !event.repeat && ['ArrowLeft', 'KeyA', 'ArrowRight', 'KeyD'].includes(event.code)) {
     const direction = event.code === 'ArrowLeft' || event.code === 'KeyA' ? -1 : 1;
-    if (driveMode.shiftLane(direction)) {
-      playTone(direction < 0 ? 250 : 310, 0.055, 'square', 0.035);
-      motion.pulse(driveHudLane, { strength: 1.18 });
-      updateDriveHud();
-    }
+    commitDriveLaneChange(direction);
     event.preventDefault();
     return;
   }
@@ -1962,12 +2022,13 @@ function endTouchPointer(event) {
     const swipeX = event.clientX - touchControl.originX;
     const swipeY = event.clientY - touchControl.originY;
     if (!touchControl.swipeCommitted && Math.abs(swipeX) > 34 && Math.abs(swipeX) > Math.abs(swipeY) * 1.15) {
-      if (driveMode.shiftLane(Math.sign(swipeX))) motion.pulse(driveHudLane, { strength: 1.18 });
+      commitDriveLaneChange(swipeX);
       touchControl.swipeCommitted = true;
     }
     touchControl.id = null;
     input.touchX = 0;
     motion.hideTouchJoystick();
+    endGestureHaptics();
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
     updateDriveHud();
     return;
@@ -1981,6 +2042,22 @@ function endTouchPointer(event) {
   touchControl.id = null;
   input.touchX = 0;
   motion.hideTouchJoystick();
+  endGestureHaptics();
+  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+}
+
+function cancelTouchPointer(event) {
+  if (event.pointerId !== touchControl.id) {
+    state.dragging = false;
+    if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+    return;
+  }
+  touchControl.id = null;
+  touchControl.swipeCommitted = false;
+  touchControl.jumpTriggered = false;
+  input.touchX = 0;
+  motion.hideTouchJoystick();
+  endGestureHaptics();
   if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
 }
 
@@ -2002,6 +2079,7 @@ canvas.addEventListener('pointerdown', (event) => {
     touchControl.maxDistance = 0;
     touchControl.jumpTriggered = false;
     touchControl.swipeCommitted = false;
+    startGestureHaptics();
     motion.showTouchJoystick(
       THREE.MathUtils.clamp(event.clientX, 88, innerWidth - 88),
       THREE.MathUtils.clamp(event.clientY, 46, innerHeight - 46),
@@ -2018,7 +2096,7 @@ canvas.addEventListener('pointerup', (event) => {
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
   }
 });
-canvas.addEventListener('pointercancel', endTouchPointer);
+canvas.addEventListener('pointercancel', cancelTouchPointer);
 
 canvas.addEventListener('pointermove', (event) => {
   if (state.mode === 'drive-active' && event.pointerId === touchControl.id) {
@@ -2030,11 +2108,7 @@ canvas.addEventListener('pointermove', (event) => {
     touchControl.maxDistance = Math.max(touchControl.maxDistance, Math.hypot(totalX, totalY));
     motion.moveTouchStick(dx);
     if (!touchControl.swipeCommitted && Math.abs(totalX) > 36 && Math.abs(totalX) > Math.abs(totalY) * 1.15) {
-      if (driveMode.shiftLane(Math.sign(totalX))) {
-        playTone(totalX < 0 ? 250 : 310, 0.055, 'square', 0.035);
-        haptic(7);
-        motion.pulse(driveHudLane, { strength: 1.18 });
-      }
+      commitDriveLaneChange(totalX);
       touchControl.swipeCommitted = true;
       updateDriveHud();
     }
@@ -2045,7 +2119,12 @@ canvas.addEventListener('pointermove', (event) => {
     touchControl.lastY = event.clientY;
     const dx = THREE.MathUtils.clamp(event.clientX - touchControl.originX, -64, 64);
     touchControl.maxDistance = Math.max(touchControl.maxDistance, Math.hypot(event.clientX - touchControl.originX, event.clientY - touchControl.originY));
-    input.touchX = dx / 64;
+    const normalized = dx / 64;
+    const deadzone = 0.12;
+    input.touchX = Math.abs(normalized) <= deadzone
+      ? 0
+      : Math.sign(normalized) * Math.pow((Math.abs(normalized) - deadzone) / (1 - deadzone), 1.12);
+    if (touchControl.maxDistance > 16) motion.hideTouchHint();
     motion.moveTouchStick(dx);
     maybeTriggerTouchJump(event.clientX, event.clientY);
     return;
@@ -2086,11 +2165,12 @@ function performJump() {
   state.coyoteTime = 0;
   input.jumpBuffer = 0;
   playTone(240, 0.11, 'triangle', 0.08);
-  haptic(12);
+  haptic('jump');
 }
 
 function performTouchJump() {
   if (state.mode !== 'free' && state.mode !== 'race-active') return;
+  motion.hideTouchHint();
   if (state.mode === 'race-active') {
     const wasAirborne = !raceMotor.grounded;
     raceMotor.jumpVelocity = 13.8;
@@ -2100,7 +2180,7 @@ function performTouchJump() {
     if (wasAirborne) state.airJumpCount += 1;
     state.touchJumpCooldown = 0.12;
     playTone(wasAirborne ? 360 : 280, 0.1, 'triangle', 0.08);
-    haptic(12);
+    haptic('jump');
     return;
   }
   const velocity = playerBody.linvel();
@@ -2112,7 +2192,7 @@ function performTouchJump() {
   state.touchJumpCooldown = 0.12;
   input.jumpBuffer = 0;
   playTone(wasAirborne ? 330 : 260, 0.1, 'triangle', 0.08);
-  haptic(12);
+  haptic('jump');
 }
 
 function requestJump() {
@@ -2137,6 +2217,9 @@ raceBackButton.addEventListener('click', showSplash);
 raceReplayButton.addEventListener('click', startRace);
 finishFreeButton.addEventListener('click', startFreeMode);
 resetButton.addEventListener('click', resetPlayer);
+for (const button of document.querySelectorAll('button')) {
+  button.addEventListener('click', () => haptic('button'));
+}
 
 function updateRaceHud() {
   const section = raceSectionAtDistance(raceMotor.distance);
@@ -2181,7 +2264,7 @@ function collectCoin(coin) {
   motion.pulse(hudCoins, { strength: 1.28 });
   const pitch = 720 + (race.coins % 6) * 55;
   playTone(pitch, 0.07, 'sine', 0.07);
-  haptic(7);
+  haptic('collect');
 }
 
 function hitObstacle() {
@@ -2195,14 +2278,14 @@ function hitObstacle() {
     showToast('SHIELD POP! · COINS SAFE');
     playTone(190, 0.22, 'sawtooth', 0.11);
     playTone(580, 0.12, 'square', 0.07, 0.06);
-    haptic([35, 18, 55]);
+    haptic('warning');
     motion.pulse(raceHud, { strength: 1.025, color: 'brightness(1.5) saturate(1.45)' });
   } else {
     race.coinCrashes += 1;
     race.coins = 0;
     showToast('CRASH! · COINS LOST');
     playTone(120, 0.34, 'sawtooth', 0.14);
-    haptic([75, 30, 80]);
+    haptic('error');
     motion.pulse(raceHud, { strength: 0.97, color: 'brightness(1.25) saturate(1.7)' });
   }
 }
@@ -2243,7 +2326,7 @@ function updateRaceGameplay(dt) {
     showToast('SHIELD READY');
     playTone(520, 0.14, 'triangle', 0.11);
     playTone(880, 0.2, 'sine', 0.08, 0.07);
-    haptic([16, 18, 16]);
+    haptic('success');
   }
   if (race.hitCooldown <= 0) {
     for (const obstacle of raceObstacles) {
@@ -2262,7 +2345,7 @@ function updateRaceGameplay(dt) {
     showToast(`CHECKPOINT ${race.checkpointIndex} · ${nextSection.name.toUpperCase()}`, 1.7);
     playTone(440, 0.12, 'triangle', 0.1);
     playTone(660, 0.2, 'triangle', 0.09, 0.08);
-    haptic(26);
+    haptic('checkpoint');
   }
   if (raceMotor.distance >= RACE_LENGTH - 1) finishRace();
   updateRaceHud();
@@ -2302,7 +2385,7 @@ function fixedUpdate(dt) {
       raceMotor.speed = 26;
       showToast('GO!', 0.8);
       playTone(720, 0.18, 'triangle', 0.14);
-      haptic(24);
+      haptic('impact');
     }
   }
 
@@ -2314,7 +2397,7 @@ function fixedUpdate(dt) {
       motion.hideCountdown();
       showToast('NIGHTSHIFT LIVE', 0.9);
       playTone(420, 0.16, 'sawtooth', 0.1);
-      haptic(20);
+      haptic('impact');
     }
   }
 
@@ -2470,7 +2553,8 @@ function updateVisuals(dt) {
     camera.up.lerp(worldCameraUp, 1 - Math.exp(-dt * 12)).normalize();
     smoothTarget.lerp(cameraTarget, 1 - Math.exp(-dt * 14));
     const speedAmount = THREE.MathUtils.clamp((driveMode.state.speed - 30) / 34, 0, 1);
-    camera.fov = THREE.MathUtils.lerp(camera.fov, 44 + speedAmount * 8, 1 - Math.exp(-dt * 5));
+    const portraitFov = camera.aspect < 0.78 ? 7 : 0;
+    camera.fov = THREE.MathUtils.lerp(camera.fov, 44 + portraitFov + speedAmount * 8, 1 - Math.exp(-dt * 5));
     camera.updateProjectionMatrix();
   } else if (isRaceMode()) {
     const frame = getRaceFrame(raceMotor.distance);
@@ -2708,10 +2792,16 @@ window.render_game_to_text = () => {
 };
 
 function resize() {
-  camera.aspect = innerWidth / innerHeight;
+  const width = Math.max(1, Math.round(window.visualViewport?.width ?? innerWidth));
+  const height = Math.max(1, Math.round(window.visualViewport?.height ?? innerHeight));
+  camera.aspect = width / height;
   camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-  composer.setSize(innerWidth, innerHeight);
+  renderer.setSize(width, height);
+  composer.setSize(width, height);
+  driveMode.setViewport?.(width, height);
 }
 addEventListener('resize', resize);
+addEventListener('orientationchange', resize);
+window.visualViewport?.addEventListener('resize', resize);
 document.addEventListener('fullscreenchange', resize);
+resize();

@@ -6,14 +6,23 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "build:native": "CAPACITOR_BUILD=true vite build",
+    "preview": "vite preview",
+    "ios:sync": "npm run build:native && cap sync ios",
+    "ios:open": "cap open ios",
+    "ios:run": "npm run ios:sync && cap run ios --no-sync",
+    "ios:run:iphone": "npm run ios:sync && cap run ios --no-sync --target 00008130-001975582EE0001C"
   },
   "dependencies": {
+    "@capacitor/core": "8.4.2",
+    "@capacitor/haptics": "8.0.2",
+    "@capacitor/ios": "8.4.2",
     "@dimforge/rapier3d-compat": "0.19.3",
     "gsap": "3.15.0",
     "three": "0.185.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "8.4.2",
     "vite": "8.1.4"
   }
 }

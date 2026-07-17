@@ -1,0 +1,9 @@
+{
+  "appId": "com.hightopgames.gamedream",
+  "appName": "Game Dream",
+  "webDir": "dist",
+  "ios": {
+    "contentInset": "never",
+    "preferredContentMode": "mobile"
+  }
+}

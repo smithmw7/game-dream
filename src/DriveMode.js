@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { gsap } from 'gsap';
 import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { DriveVisualGains } from './DriveVisualGains.js';
 
 const DRIVE_ORIGIN_X = -1000;
 const ROAD_NEAR_Z = 18;
@@ -22,6 +23,7 @@ export class DriveMode {
   } = {}) {
     this.scene = scene;
     this.isMobile = isMobile;
+    this.viewportAspect = innerWidth / Math.max(1, innerHeight);
     this.onCollect = onCollect;
     this.onCrash = onCrash;
     this.prefersReducedMotion = prefersReducedMotion;
@@ -73,6 +75,11 @@ export class DriveMode {
     this.createRunnerObjects();
     this.createCar();
     this.createLights();
+    this.visualGains = new DriveVisualGains(this.root, this.car, {
+      isMobile: this.isMobile,
+      prefersReducedMotion: this.prefersReducedMotion,
+      patchMaterial: (material, key) => this.patchBend(material, key),
+    });
     this.reset();
   }
 
@@ -140,23 +147,29 @@ export class DriveMode {
             float marker = laneA * dash;
             vec2 puddleCell = floor(vec2(driveRoadX * 1.7, driveRoadZ * 0.18));
             float puddleNoise = fract(sin(dot(puddleCell, vec2(12.9898, 78.233))) * 43758.5453);
-            float puddle = smoothstep(0.68, 0.94, puddleNoise) * (1.0 - smoothstep(1.2, 5.4, abs(driveRoadX)));
+            float puddle = smoothstep(0.61, 0.94, puddleNoise) * (0.36 + 0.64 * (1.0 - smoothstep(1.2, 5.4, abs(driveRoadX))));
+            vec2 gritCell = floor(vec2(driveRoadX * 21.0, driveRoadZ * 3.2));
+            float microGrit = fract(sin(dot(gritCell, vec2(18.9898, 63.7264))) * 31758.5453);
+            float tireWear = exp(-abs(abs(driveRoadX) - 1.62) * 0.7);
+            float rainRill = pow(0.5 + 0.5 * sin(driveRoadZ * 0.36 + driveRoadX * 8.0), 26.0);
             float neonStreak = pow(max(0.0, sin(driveRoadZ * 0.11 + driveRoadX * 0.7)), 18.0) * 0.2;
             float wetPulse = 0.15 + 0.85 * pow(0.5 + 0.5 * sin(driveRoadZ * 0.075), 8.0);
             float cyanReflection = exp(-abs(driveRoadX + 4.75) * 1.12) * wetPulse;
             float pinkReflection = exp(-abs(driveRoadX - 4.75) * 1.12) * wetPulse;
-            vec3 asphalt = mix(vec3(0.006, 0.009, 0.018), vec3(0.018, 0.027, 0.045), puddle);
+            vec3 asphalt = mix(vec3(0.004, 0.006, 0.013), vec3(0.018, 0.03, 0.052), puddle);
+            asphalt *= 0.78 + microGrit * 0.26;
+            asphalt += tireWear * vec3(0.005, 0.008, 0.014) + rainRill * vec3(0.002, 0.008, 0.014);
             diffuseColor.rgb = asphalt;
-            diffuseColor.rgb += marker * vec3(0.08, 0.82, 1.0) * 0.44;
-            diffuseColor.rgb += edgeLine * vec3(1.0, 0.02, 0.47) * 0.52;
-            diffuseColor.rgb += cyanReflection * vec3(0.0, 0.34, 0.48) * (0.12 + puddle * 0.34);
-            diffuseColor.rgb += pinkReflection * vec3(0.48, 0.0, 0.22) * (0.12 + puddle * 0.34);
+            diffuseColor.rgb += marker * vec3(0.08, 0.82, 1.0) * 0.52;
+            diffuseColor.rgb += edgeLine * vec3(1.0, 0.02, 0.47) * 0.62;
+            diffuseColor.rgb += cyanReflection * vec3(0.0, 0.34, 0.48) * (0.18 + puddle * 0.5);
+            diffuseColor.rgb += pinkReflection * vec3(0.48, 0.0, 0.22) * (0.18 + puddle * 0.5);
             diffuseColor.rgb += neonStreak * mix(vec3(0.0, 0.72, 1.0), vec3(1.0, 0.0, 0.48), step(0.0, driveRoadX));`,
           )
           .replace(
             '#include <roughnessmap_fragment>',
             `#include <roughnessmap_fragment>
-            roughnessFactor = mix(0.34, 0.095, puddle);`,
+            roughnessFactor = clamp(mix(0.48, 0.055, puddle) + (microGrit - 0.5) * 0.11 - rainRill * 0.08, 0.045, 0.58);`,
           )
           .replace(
             '#include <emissivemap_fragment>',
@@ -166,9 +179,9 @@ export class DriveMode {
           )
           .replace(
             '#include <opaque_fragment>',
-            `outgoingLight *= 0.22;
+            `outgoingLight *= 0.26;
             outgoingLight += marker * vec3(0.03, 0.42, 0.72) + edgeLine * vec3(0.82, 0.0, 0.24);
-            outgoingLight += cyanReflection * vec3(0.0, 0.11, 0.18) + pinkReflection * vec3(0.16, 0.0, 0.08);
+            outgoingLight += cyanReflection * vec3(0.0, 0.17, 0.28) + pinkReflection * vec3(0.24, 0.0, 0.12);
             #include <opaque_fragment>`,
           );
       } else if (style === 'building') {
@@ -196,7 +209,7 @@ export class DriveMode {
         );
       }
     };
-    material.customProgramCacheKey = () => `game-dream-drive-${key}-v3`;
+    material.customProgramCacheKey = () => `game-dream-drive-${key}-v4`;
     return material;
   }
 
@@ -238,13 +251,15 @@ export class DriveMode {
 
   createRoad() {
     const roadMaterial = this.patchBend(new THREE.MeshPhysicalMaterial({
-      color: '#02040a', roughness: 0.34, metalness: 0.04,
-      clearcoat: 0.72, clearcoatRoughness: 0.16, envMapIntensity: 0.2,
+      color: '#02040a', roughness: 0.26, metalness: 0.08,
+      clearcoat: 1, clearcoatRoughness: 0.055, envMapIntensity: 0.58,
+      specularIntensity: 0.9, ior: 1.42,
     }), 'wet-road', 'road');
     const roadGeometry = new THREE.BoxGeometry(12, 0.24, 320, 1, 1, this.isMobile ? 80 : 144);
     this.road = new THREE.Mesh(roadGeometry, roadMaterial);
     this.road.position.set(0, -0.16, -141);
     this.road.frustumCulled = false;
+    this.road.receiveShadow = true;
     this.root.add(this.road);
 
     const curbMaterial = this.patchBend(new THREE.MeshStandardMaterial({
@@ -254,6 +269,7 @@ export class DriveMode {
       const curb = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.42, 320, 1, 1, this.isMobile ? 64 : 128), curbMaterial);
       curb.position.set(side * 6.8, -0.04, -141);
       curb.frustumCulled = false;
+      curb.receiveShadow = true;
       this.root.add(curb);
 
       const railMaterial = this.patchBend(new THREE.MeshBasicMaterial({
@@ -316,6 +332,7 @@ export class DriveMode {
       const surface = new THREE.Mesh(geometry, terrainMaterial);
       const wire = new THREE.Mesh(geometry, wireMaterial);
       surface.frustumCulled = false;
+      surface.receiveShadow = true;
       wire.frustumCulled = false;
       wire.renderOrder = 1;
       this.root.add(surface, wire);
@@ -406,6 +423,8 @@ export class DriveMode {
       const shard = new THREE.Mesh(shardGeometry, shardMaterial);
       barrier.frustumCulled = false;
       shard.frustumCulled = false;
+      barrier.castShadow = true;
+      barrier.receiveShadow = true;
       this.root.add(barrier, shard);
       const object = { barrier, shard, kind: 'shard', lane: 1, z: -30, resolved: false };
       this.runnerObjects.push(object);
@@ -491,6 +510,12 @@ export class DriveMode {
     spoiler.position.set(0, 1.25, 2.15);
     this.carImpactRig.add(spoiler);
 
+    this.carImpactRig.traverse((child) => {
+      if (!child.isMesh || child.material?.transparent) return;
+      child.castShadow = true;
+      child.receiveShadow = true;
+    });
+
     const hoverAmount = this.prefersReducedMotion() ? 0 : 0.022;
     this.carIdleTimeline = gsap.timeline({ repeat: -1, yoyo: true });
     this.carIdleTimeline.to(this.carMotionRig.position, {
@@ -536,6 +561,7 @@ export class DriveMode {
     this.carImpactRig.rotation.set(0, 0, 0);
     this.carImpactRig.scale.setScalar(1);
     this.underglow.material.opacity = 0.26;
+    this.visualGains?.reset();
     this.carIdleTimeline.restart();
     this.carIdleTimeline.paused(!this.root.visible);
     this.buildings.forEach((building, index) => this.recycleBuilding(building, -18 - index * (this.isMobile ? 10 : 7.2)));
@@ -580,6 +606,7 @@ export class DriveMode {
 
   animateShardCollect(object) {
     const shard = object.shard;
+    this.visualGains?.collect(shard.position);
     gsap.killTweensOf(shard.scale);
     gsap.timeline()
       .to(shard.scale, {
@@ -605,6 +632,7 @@ export class DriveMode {
     this.laneTimeline?.kill();
     this.impactTimeline?.kill();
     this.carIdleTimeline.pause();
+    this.visualGains?.crash(new THREE.Vector3(this.state.lateralX, 0.82, CAR_Z - 0.9));
     gsap.killTweensOf([this.carMotionRig.rotation, this.carImpactRig.position, this.carImpactRig.rotation, this.carImpactRig.scale]);
     const amount = this.prefersReducedMotion() ? 0.2 : 1;
     this.impactTimeline = gsap.timeline({ defaults: { overwrite: 'auto' } });
@@ -625,7 +653,10 @@ export class DriveMode {
   update(dt, active) {
     this.bendUniforms.uDriveTime.value += dt;
     this.terrainAccumulator += dt;
-    if (!active || this.state.crashed) return;
+    if (!active || this.state.crashed) {
+      this.visualGains?.update(this.state, false);
+      return;
+    }
 
     this.state.elapsed += dt;
     this.state.speed = Math.min(62, this.state.speed + dt * 0.72);
@@ -688,14 +719,20 @@ export class DriveMode {
     }
 
     this.updateTerrain();
+    this.visualGains?.update(this.state, !this.state.crashed);
   }
 
   getCameraPose(target, position) {
+    const portrait = this.viewportAspect < 0.78;
     const targetFollow = this.isMobile ? 0.88 : 0.38;
     const cameraFollow = this.isMobile ? 0.98 : 0.82;
-    target.set(DRIVE_ORIGIN_X + this.state.lateralX * targetFollow, 1.3, -9.5);
-    position.set(DRIVE_ORIGIN_X + this.state.lateralX * cameraFollow, 6.4, 18.2);
+    target.set(DRIVE_ORIGIN_X + this.state.lateralX * targetFollow, portrait ? 1.65 : 1.3, portrait ? -10.7 : -9.5);
+    position.set(DRIVE_ORIGIN_X + this.state.lateralX * cameraFollow, portrait ? 7.25 : 6.4, portrait ? 20.8 : 18.2);
     return { target, position };
+  }
+
+  setViewport(width, height) {
+    this.viewportAspect = Math.max(1, width) / Math.max(1, height);
   }
 
   getCarWorldPosition(target = this.worldCarPosition) {
@@ -725,6 +762,7 @@ export class DriveMode {
       bendX: +this.bendUniforms.uBendX.value.toFixed(6),
       bendY: +this.bendUniforms.uBendY.value.toFixed(6),
       terrain: 'camera-centered ImprovedNoise FBM mesh resampled during travel',
+      visualGains: this.visualGains?.snapshot(),
       nearbyObjects: this.nearbyObjects(),
     };
   }
