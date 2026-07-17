@@ -1,13 +1,19 @@
-# Game Dream
+# Game Dream Prototype
 
-A surreal, high-speed rolling-marble game built with Three.js and Rapier.
+A Three.js arcade prototype combining an endless neon driving runner, a 6.5 km looping marble race, and a surreal physics playground.
 
-[Play Game Dream](https://smithmw7.github.io/game-dream/)
+[Play the prototype](https://smithmw7.github.io/game-dream-prototype/)
+
+See the [best-in-class product and technical roadmap](./ROADMAP.md).
 
 ## Features
 
 - Rigid glossy marble with a texture-free volumetric PBR shader
-- Splash screen with Free Mode and the timed `Monolith Velocity` Race Mode
+- Splash screen with Drive, Race, and Free modes
+- `Neon Nightshift` endless Drive Mode with a cyber coupe, three fixed swipe lanes, pooled obstacles and shards, persistent records, and a responsive chase camera
+- Curved-world vertex shader shared by wet asphalt, procedural terrain, recycled city buildings, hazards, and pickups while collision remains deterministic in straight lane space
+- Live `ImprovedNoise` terrain, endless neon skyline, synthetic sunset, clearcoated pavement, and procedural cyan/magenta wet-road reflections
+- Desktop arrow/A/D controls and one-swipe/one-lane mobile input
 - Literal 6.5 km downhill half-pipe: 50x the original course length, descending from the cloudline
 - Thirteen authored pacing sections, twelve checkpoints, strong S-turns, changing banks, rollers, two complete vertical loops, and a finish line
 - 452 collectible coins, 71 coin-clearing hazards, and six single-hit shield powerups
@@ -30,6 +36,7 @@ A surreal, high-speed rolling-marble game built with Three.js and Rapier.
 
 ### Desktop
 
+- Drive Mode: automatic acceleration; `A`/`D` or Left/Right changes one fixed lane
 - Race Mode: automatic forward speed, arrows/`A`/`D` to steer, `Space` to jump at any height
 - Free Mode: `WASD` or arrow keys to roll, `Space` to jump, drag to look around
 - `R`: reset
@@ -37,6 +44,7 @@ A surreal, high-speed rolling-marble game built with Three.js and Rapier.
 
 ### Mobile
 
+- Drive Mode: swipe left or right to move one fixed lane
 - Forward movement and camera follow are automatic in Race Mode
 - Slide one finger left or right: steer
 - Tap or swipe upward: jump again at any height
